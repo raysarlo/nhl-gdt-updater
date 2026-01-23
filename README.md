@@ -11,7 +11,46 @@ Pre-built executables (no Python required):
 | Windows | [NHL-GDT-Updater-Windows.exe](releases/NHL-GDT-Updater-Windows.exe) |
 | Mac | Coming soon (check Releases) |
 
+### Running the Executable
+
+**Option 1: Interactive Mode (Double-click)**
+
 Just double-click the executable and follow the prompts.
+
+**Option 2: Command Line**
+
+**Windows (Command Prompt or PowerShell):**
+```cmd
+# Navigate to where you downloaded the exe
+cd C:\Users\YourName\Downloads
+
+# Run with team name
+NHL-GDT-Updater-Windows.exe Rangers
+
+# Run with a specific template file
+NHL-GDT-Updater-Windows.exe Rangers --file "C:\path\to\template.txt"
+
+# Run with custom output file
+NHL-GDT-Updater-Windows.exe NYR --file "template.txt" --output "updated.txt"
+```
+
+**Mac (Terminal):**
+```bash
+# Navigate to where you downloaded the file
+cd ~/Downloads
+
+# Make it executable (only needed once)
+chmod +x NHL-GDT-Updater-Mac
+
+# Run with team name
+./NHL-GDT-Updater-Mac Rangers
+
+# Run with a specific template file
+./NHL-GDT-Updater-Mac Rangers --file "/path/to/template.txt"
+
+# Run with custom output file
+./NHL-GDT-Updater-Mac NYR --file "template.txt" --output "updated.txt"
+```
 
 ## Features
 
