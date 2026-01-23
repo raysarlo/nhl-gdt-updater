@@ -2,6 +2,17 @@
 
 A Python tool that automatically updates NHL Game Day Thread templates with live team data from the NHL API and DailyFaceoff.
 
+## Downloads
+
+Pre-built executables (no Python required):
+
+| Platform | Download |
+|----------|----------|
+| Windows | [NHL-GDT-Updater-Windows.exe](releases/NHL-GDT-Updater-Windows.exe) |
+| Mac | Coming soon (check Releases) |
+
+Just double-click the executable and follow the prompts.
+
 ## Features
 
 - **Standings**: Record, points, division position, ROW, P%, home/away records, shootout record, L10, streak

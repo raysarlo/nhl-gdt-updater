@@ -20,3 +20,10 @@ Thumbs.db
 
 # Output files
 *.log
+
+# PyInstaller
+build/
+*.spec
+
+# Keep releases folder but ignore dist
+dist/

@@ -754,50 +754,132 @@ def update_template(template_content, team_abbrev):
     return content
 
 
+def interactive_mode():
+    """Run in interactive mode - prompts user for input."""
+    print("=" * 50)
+    print("  NHL Game Day Thread (GDT) Updater")
+    print("=" * 50)
+    print()
+
+    # Get team name
+    print("Supported teams: Rangers, Oilers, Leafs, Bruins, etc.")
+    print("You can use full names, nicknames, or abbreviations (NYR, EDM, TOR, BOS)")
+    print()
+
+    while True:
+        team_input = input("Enter team name: ").strip()
+        if not team_input:
+            print("Please enter a team name.")
+            continue
+
+        team_abbrev = get_team_abbrev(team_input)
+        if team_abbrev:
+            print(f"Team identified: {team_abbrev}")
+            break
+        else:
+            print(f"Could not recognize '{team_input}'. Please try again.")
+            print("Examples: Rangers, NYR, New York Rangers, Oilers, EDM, etc.")
+
+    print()
+
+    # Get template file path
+    print("Enter the path to your template file.")
+    print("(You can drag and drop the file into this window)")
+    print()
+
+    while True:
+        file_path = input("Template file path: ").strip()
+        # Remove quotes that might be added when dragging/dropping
+        file_path = file_path.strip('"').strip("'")
+
+        if not file_path:
+            print("Please enter a file path.")
+            continue
+
+        # Check if file exists
+        import os
+        if os.path.exists(file_path):
+            break
+        else:
+            print(f"File not found: {file_path}")
+            print("Please check the path and try again.")
+
+    print()
+    print("Updating template...")
+    print()
+
+    return team_abbrev, file_path
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Update NHL Game Day Thread template with team data')
-    parser.add_argument('team', help='NHL team name (e.g., "New York Rangers", "Rangers", "NYR")')
-    parser.add_argument('--file', '-f', default=r'C:\Users\raysa\Downloads\GDT Test.txt',
-                        help='Path to the template file')
-    parser.add_argument('--output', '-o', help='Output file path (defaults to overwriting input file)')
+    # Check if running with command-line arguments or interactively
+    if len(sys.argv) > 1:
+        # Command-line mode
+        parser = argparse.ArgumentParser(description='Update NHL Game Day Thread template with team data')
+        parser.add_argument('team', nargs='?', help='NHL team name (e.g., "New York Rangers", "Rangers", "NYR")')
+        parser.add_argument('--file', '-f', help='Path to the template file')
+        parser.add_argument('--output', '-o', help='Output file path (defaults to overwriting input file)')
+        parser.add_argument('--interactive', '-i', action='store_true', help='Run in interactive mode')
 
-    args = parser.parse_args()
+        args = parser.parse_args()
 
-    # Resolve team
-    team_abbrev = get_team_abbrev(args.team)
-    if not team_abbrev:
-        print(f"Error: Could not recognize team '{args.team}'")
-        print("Try using the full team name (e.g., 'New York Rangers') or abbreviation (e.g., 'NYR')")
-        sys.exit(1)
+        if args.interactive or not args.team:
+            team_abbrev, file_path = interactive_mode()
+            output_path = file_path
+        else:
+            team_abbrev = get_team_abbrev(args.team)
+            if not team_abbrev:
+                print(f"Error: Could not recognize team '{args.team}'")
+                print("Try using the full team name (e.g., 'New York Rangers') or abbreviation (e.g., 'NYR')")
+                sys.exit(1)
 
-    print(f"Team identified: {team_abbrev}")
+            print(f"Team identified: {team_abbrev}")
+
+            if not args.file:
+                print("Error: Please specify a template file with --file")
+                sys.exit(1)
+
+            file_path = args.file
+            output_path = args.output or args.file
+    else:
+        # Interactive mode (double-clicked exe or run without args)
+        team_abbrev, file_path = interactive_mode()
+        output_path = file_path
 
     # Read template
     try:
-        with open(args.file, 'r', encoding='utf-8-sig') as f:
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
             template = f.read()
     except FileNotFoundError:
-        print(f"Error: Template file not found: {args.file}")
+        print(f"Error: Template file not found: {file_path}")
+        input("\nPress Enter to exit...")
         sys.exit(1)
     except Exception as e:
         print(f"Error reading template: {e}")
+        input("\nPress Enter to exit...")
         sys.exit(1)
 
     # Update template
     updated = update_template(template, team_abbrev)
     if not updated:
         print("Error: Failed to update template")
+        input("\nPress Enter to exit...")
         sys.exit(1)
 
     # Write output
-    output_path = args.output or args.file
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(updated)
-        print(f"Successfully updated: {output_path}")
+        print(f"\nSuccessfully updated: {output_path}")
     except Exception as e:
         print(f"Error writing output: {e}")
+        input("\nPress Enter to exit...")
         sys.exit(1)
+
+    # If running interactively, wait for user before closing
+    if len(sys.argv) <= 1:
+        print()
+        input("Press Enter to exit...")
 
 
 if __name__ == '__main__':
