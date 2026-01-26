@@ -1,354 +1,663 @@
-<h3>
-                <b>Standings:</b>
-        </h3>
-
-
-        <div class="gdtTable">
-                <div class="gdtLeft">
-                        <p>
-                                <b>RECORD:</b>
-                        </p>
-
-
-                        <p>
-                                <b>POSITION:</b>
-                        </p>
-
-
-                        <p>
-                                <b>ROW:</b>
-                        </p>
-
-
-                        <p>
-                                <b>P%:</b>
-                        </p>
-
-
-                        <p>
-                                <b>HOME:</b>
-                        </p>
-
-
-                        <p>
-                                <b>AWAY:</b>
-                        </p>
-
-
-                        <p>
-                                <b>S/O:</b>
-                        </p>
-
-
-                        <p>
-                                <b>LAST 10:</b>
-                        </p>
-
-
-                        <p>
-                                <b>STREAK:</b>
-                        </p>
-                </div>
-
-
-                <div class="gdtRight">
-                        <p data-gdt="***UPDATE RECORD***">
-							25-18-8 (<b>58 Points</b>)
-						</p>
-
-
-                        <p data-gdt="***UPDATE POSITION***">
-							2nd &mdash; Pacific
-						</p>
-
-
-                        <p data-gdt="***UPDATE ROW***">
-							25
-						</p>
-
-
-                        <p data-gdt="***UPDATE POINTS%***">
-							.568
-						</p>
-
-
-                        <p data-gdt="***UPDATE RECORD HOME***">
-							12-7-4
-						</p>
-
-
-                        <p data-gdt="***UPDATE RECORD AWAY***">
-							13-11-4
-						</p>
-
-
-                        <p data-gdt="***UPDATE SHOOTOUT RECORD***">
-							0-3
-						</p>
-
-
-                        <p data-gdt="***UPDATE LAST 10 RECORD***">
-							5-3-2
-						</p>
-
-
-                        <p data-gdt="***UPDATE STREAK***">
-							L1
-						</p>
-                </div>
-        </div>
-
-
-        <h3>
-                <b>Team Statistics:</b>
-        </h3>
-
-
-        <div class="gdtTable">
-                <div class="gdtLeft">
-                        <p>
-                                <b>DIFF:</b>
-                        </p>
-
-
-                        <p>
-                                <b>GF/GP:</b>
-                        </p>
-
-
-                        <p>
-                                <b>GA/GP:</b>
-                        </p>
-
-
-                        <p>
-                                <b>PP%:</b>
-                        </p>
-
-
-                        <p>
-                                <b>PK%:</b>
-                        </p>
-                </div>
-
-
-                <div class="gdtRight">
-                        <p data-gdt="***UPDATE NYR GOAL DIFFERENTIAL (POSITION)***">
-							+11 (10th)
-						</p>
-
-
-                        <p data-gdt="***UPDATE GF/GP (POSITION)***">
-							3.35 (5th)
-						</p>
-
-
-                        <p data-gdt="***UPDATE GA/GP (POSITION)***">
-							3.14 (20th)
-						</p>
-
-
-                        <p data-gdt="***UPDATE PP% (POSITION)***">
-							32.6% (1st)
-						</p>
-
-
-                        <p data-gdt="***UPDATE PK% (POSITION)***">
-							80.6% (10th)
-						</p>
-                </div>
-        </div>
-
-
-        <h3>
-                <b>Team Leaders:</b>
-        </h3>
-
-
-        <div class="gdtTable">
-                <div class="gdtLeft">
-                        <p>
-                                <b>Goals:</b>
-                        </p>
-
-
-                        <p>
-                                <b>Assists:</b>
-                        </p>
-
-
-                        <p>
-                                <b>Points:</b>
-                        </p>
-
-
-                        <p>
-                                <b>+/-:</b>
-                        </p>
-
-
-                        <p>
-                                <b>PIM:</b>
-                        </p>
-
-
-                        <p>
-                                <b>TOI/G (D):</b>
-                        </p>
-
-
-                        <p>
-                                <b>TOI/G (F):</b>
-                        </p>
-                </div>
-
-
-                <div class="gdtRight">
-                        <p data-gdt="***UPDATE INDIVIDUAL GOALS***">
-							Connor McDavid (30)
-						</p>
-
-
-                        <p data-gdt="***UPDATE INDIVIDUAL ASSISTS***">
-							Connor McDavid (55)
-						</p>
-
-
-                        <p data-gdt="***UPDATE INDIVIDUAL POINTS***">
-							Connor McDavid (85)
-						</p>
-
-
-                        <p data-gdt="***UPDATE INDIVIDUAL +/-***">
-							Mattias Ekholm (+14)
-						</p>
-
-
-                        <p data-gdt="***UPDATE INDIVIDUAL PIM***">
-							Darnell Nurse (81)
-						</p>
-
-
-                        <p data-gdt="***UPDATE INDIVIDUAL MOST TIME ON ICE PER GAME - DEFENSE***">
-							Evan Bouchard (24:38)
-						</p>
-
-
-                        <p data-gdt="***UPDATE INDIVIDUAL MOST TIME ON ICE PER GAME - OFFENSE***">
-							Connor McDavid (22:56)
-						</p>
-                </div>
-        </div>
-
-
-        <h3>
-                <b>Starting Lineup:^</b>
-        </h3>
-
-
-        <p>
-				Ryan Nugent Hopkins / Connor McDavid / Zach Hyman<br>
-				Vasily Podkolzin / Leon Draisaitl / Jack Roslovic<br>
-				Isaac Howard / Trent Frederic / Matthew Savoie<br>
-				Andrew Mangiapane / Curtis Lazar / Mattias Janmark
+<p style="text-align: center;">
+	img alt="BSBH Game Day Thread Logo" data-loaded="true" data-src="https://www.dropbox.com/s/rvdf4wif0cjlfbg/GDT_2022-23_head.png?raw=1" src="https://www.blueshirtsbrotherhood.com/applications/core/interface/js/spacer.png" style="height: auto;">
+</p>
+
+
+<div class="GDT">
+	<h3>
+		REGULAR SEASON GAME #45 &mdash; 1/8/25
+	</h3>
+
+	<h3>
+		<img alt="NYR Logo Reflection" data-fileid="83" data-loaded="true" data-src="https://www.blueshirtsbrotherhood.com/uploads/monthly_2021_09/gdt-logos-nyr.png.361dbab7a8ecf15de4e4b3a41c339331.png" src="https://www.blueshirtsbrotherhood.com/applications/core/interface/js/spacer.png" style="height: auto;">&nbsp;vs.<span>&nbsp;</span><img alt="https://www.blueshirtsbrotherhood.com/uploads/monthly_2021_09/gdt-logos-pit.png.cc1de7bfb6706e84d860f54e886b3911.png" class="ipsImage" data-loaded="true" data-ratio="25.00" data-src="https://www.blueshirtsbrotherhood.com/uploads/monthly_2021_09/gdt-logos-buf.png.74b16b6cea5f0178680004507f29d0eb.png" height="75" src="https://www.blueshirtsbrotherhood.com/applications/core/interface/js/spacer.png" style="height: auto;" width="300">
+	</h3>
+
+	<h4>
+		<b>Time</b>: 7:00 PM<br>
+		<b>TV</b><span>:</span>&nbsp;MSG-B, MSGbr>
+		<b>&nbsp;Radio</b>: 98.7 FM, 107.1 FM, 710 AM, Sirius XM
+	</h4>
+
+	<h2>
+		LINKS:
+	</h2>
+
+	<p>
+		<b>Follow the Beat:</b><br>
+		&nbsp;<a href="https://twitter.com/MollieeWalkerr" rel="external nofollow" target="_blank">MollieeWalkerr</a> &bull; <a href="https://twitter.com/colinsnewsday" rel="external nofollow" target="_blank">@ColinSNewsday</a> &bull; <a href="https://twitter.com/vzmercogliano" rel="external nofollow" target="_blank">@vzmercogliano</a> &bull; <a href="https://x.com/peter_baugh" rel="external nofollow">@Peter_Baugh</a>&nbsp;&bull; <a href="https://x.com/JLazzy23" rel="external nofollow">@JLazzy23</a>
+	</p>
+
+	<p>
+		<br>
+		<b>GameCenter</b><br>
+		<a href="https://www.nhl.com/gamecenter/buf-vs-nyr/2026/01/08/2025020685" rel="external nofollow">Click here</a><br>
+		&nbsp;
+	</p>
+
+	<hr style="width:25%">
+	<br>
+	<img alt="NYR Logo" data-fileid="83" data-loaded="true" data-src="https://www.blueshirtsbrotherhood.com/uploads/monthly_2021_09/gdt-logos-nyr.png.361dbab7a8ecf15de4e4b3a41c339331.png" src="https://www.blueshirtsbrotherhood.com/applications/core/interface/js/spacer.png" style="height: auto;">
+	<h3>
+		<b>Standings:</b>
+	</h3>
+
+	<div class="gdtTable">
+		<div class="gdtLeft">
+			<p>
+				<b>RECORD:</b>
 			</p>
 
-
-        <p>
-                &nbsp;
-        </p>
-
-
-        <p>
-				Mattias Ekholm / Evan Bouchard<br>
-				Darnell Nurse / Ty Emberson<br>
-				Jake Walman / Spencer Stastney
+			<p>
+				<b>POSITION:</b>
 			</p>
 
+			<p>
+				<b>ROW:</b>
+			</p>
 
-        <h3>
-                <b>Starting Goaltender:</b>
-        </h3>
+			<p>
+				<b>P%:</b>
+			</p>
+
+			<p>
+				<b>HOME:</b>
+			</p>
+
+			<p>
+				<b>AWAY:</b>
+			</p>
+
+			<p>
+				<b>S/O:</b>
+			</p>
+
+			<p>
+				<b>LAST 10:</b>
+			</p>
+
+			<p>
+				<b>STREAK:</b>
+			</p>
+		</div>
+
+		<div class="gdtRight">
+			<p data-gdt="***UPDATE NYR RECORD***">
+				20-18-6 (<b>46 Points</b>)
+			</p>
+
+			<p data-gdt="***UPDATE POSITION***">
+				7th &mdash; Metropolitan
+			</p>
+
+			<p data-gdt="***UPDATE ROW***">
+				18
+			</p>
+
+			<p data-gdt="***UPDATE P%***">
+				.523
+			</p>
+
+			<p data-gdt="***UPDATE RECORD HOME***">
+				5-10-4
+			</p>
+
+			<p data-gdt="***UPDATE RECORD AWAY***">
+				15-8-2
+			</p>
+
+			<p data-gdt="***UPDATE S/O***">
+				2-0
+			</p>
+
+			<p data-gdt="***UPDATE LAST 10***">
+				4-4-2
+			</p>
+
+			<p data-gdt="***UPDATE STREAK***">
+				OT1
+			</p>
+		</div>
+	</div>
+
+	<h3>
+		<b>Team Statistics:</b>
+	</h3>
+
+	<div class="gdtTable">
+		<div class="gdtLeft">
+			<p>
+				<b>DIFF:</b>
+			</p>
+
+			<p>
+				<b>GF/GP:</b>
+			</p>
+
+			<p>
+				<b>GA/GP:</b>
+			</p>
+
+			<p>
+				<b>PP%:</b>
+			</p>
+
+			<p>
+				<b>PK%:</b>
+			</p>
+		</div>
+
+		<div class="gdtRight">
+			<p data-gdt="***UPDATE NYR DIFF***">
+				-4 (19th)
+			</p>
+
+			<p data-gdt="***UPDATE GF/GP***">
+				2.59 (30th)
+			</p>
+
+			<p data-gdt="***UPDATE GA/GP***">
+				2.73 (6th)
+			</p>
+
+			<p data-gdt="***UPDATE PP%***">
+				22.2% (11th)
+			</p>
+
+			<p data-gdt="***UPDATE PK%***">
+				80.5% (15th)
+			</p>
+		</div>
+	</div>
+
+	<h3>
+		<b>Team Leaders:</b>
+	</h3>
+
+	<div class="gdtTable">
+		<div class="gdtLeft">
+			<p>
+				<b>Goals:</b>
+			</p>
+
+			<p>
+				<b>Assists:</b>
+			</p>
+
+			<p>
+				<b>Points:</b>
+			</p>
+
+			<p>
+				<b>+/-:</b>
+			</p>
+
+			<p>
+				<b>PIM:</b>
+			</p>
+
+			<p>
+				<b>TOI/G (D):</b>
+			</p>
+
+			<p>
+				<b>TOI/G (F):</b>
+			</p>
+		</div>
+
+		<div class="gdtRight">
+			<p data-gdt="***UPDATE NYR GOALS***">
+				Artemi Panarin (16)
+			</p>
+
+			<p data-gdt="***UPDATE ASSISTS***">
+				Artemi Panarin (30)
+			</p>
+
+			<p data-gdt="***UPDATE POINTS***">
+				Artemi Panarin (46)
+			</p>
+
+			<p data-gdt="***UPDATE +/-***">
+				Carson Soucy (+7)
+			</p>
+
+			<p data-gdt="***UPDATE PIM***">
+				Sam Carrick (35)
+			</p>
+
+			<p data-gdt="***UPDATE TOI/G (D)***">
+				Vladislav Gavrikov (23:49)
+			</p>
+
+			<p data-gdt="***UPDATE TOI/G (F)***">
+				Vincent Trocheck (23:47)
+			</p>
+		</div>
+	</div>
+
+	<h3>
+		<b>Starting Lineup:^</b>
+	</h3>
+
+	<p>
+		Artemi Panarin <strong>A</strong> / Mika Zibanejad <strong>A</strong> / Will Cuylle<br>
+		J.T. Miller / Vincent Trocheck <strong>A</strong> / Alexis Lafreni&egrave;re<br>
+		Gabriel Perreault / Justin Dowling / Taylor Raddysh<br>
+		Anton Blidh / Sam Carrick / Matt Rempe
+	</p>
+
+	<p>
+		&nbsp;
+	</p>
+
+	<p>
+		Vladislav Gavirov / Braden Schneider<br>
+		Carson Soucy / Will Borgen<br>
+		Urho Vaakanainen / Matthew Robertson
+	</p>
+
+	<h3>
+		<b>Starting Goaltender:</b>
+	</h3>
+
+	<p>
+		Jonathan Quick<br>
+		&nbsp;
+	</p>
+
+	<div class="gdtTable">
+		<div class="gdtLeft">
+			<p>
+				<b>GS:</b>
+			</p>
+
+			<p>
+				<b>REC:</b>
+			</p>
+
+			<p>
+				<b>SV%:</b>
+			</p>
+
+			<p>
+				<b>GAA:</b>
+			</p>
+
+			<p>
+				<b>SO:</b>
+			</p>
+		</div>
+
+		<div class="gdtRight">
+			<p data-gdt="***UPDATE GS***">
+				11
+			</p>
+
+			<p data-gdt="***UPDATE REC***">
+				3-6-2
+			</p>
+
+			<p data-gdt="***UPDATE SV%***">
+				.919
+			</p>
+
+			<p data-gdt="***UPDATE GAA***">
+				2.23
+			</p>
+
+			<p data-gdt="***UPDATE SO***">
+				1
+			</p>
+		</div>
+	</div>
+
+	<h3>
+		<b>Injuries, Suspensions, &amp; Scratches:</b>
+	</h3>
+
+	<p>
+		Adam Fox&nbsp;<span class="gdtAlert">[IR]</span> &mdash; Lower-body injury
+	</p>
+
+<p>
+		Igor Shesterkin&nbsp;<span class="gdtAlert">[IR]</span> &mdash; Lower-body injury
+	</p>
+
+	<p>
+		Adam Edstrom&nbsp;<span class="gdtAlert">[IR]</span> &mdash; Lower-body injury
+	</p>
+
+	<p>
+		Noah Laba&nbsp;<span class="gdtAlert">[IR]</span> &mdash; Upper-body injury
+	</p>
+
+	<p>
+		Conor Sheary&nbsp;<span class="gdtAlert">[LTIR]</span> &mdash; Lower-body injury<br>
+		&nbsp;
+	</p>
+
+	<p>
+		&nbsp;
+	</p>
+
+		<hr style="width:25%">
+	<h3>
+		<img alt="ANA.png.e205426d6dd0c0e62a8ca45f4285a848" class="ipsImage" data-loaded="true" data-ratio="25.00" data-src="https://www.blueshirtsbrotherhood.com/uploads/monthly_2021_09/gdt-logos-buf.png.74b16b6cea5f0178680004507f29d0eb.png" height="75" src="https://www.blueshirtsbrotherhood.com/applications/core/interface/js/spacer.png" style="height: auto;" width="300">
+	</h3>
 
 
-        <p>
-				Tristan Jarry<br>
-                &nbsp;
-        </p>
+	<h3>
+		<b>Standings:</b>
+	</h3>
+
+	<div class="gdtTable">
+		<div class="gdtLeft">
+			<p>
+				<b>RECORD:</b>
+			</p>
+
+			<p>
+				<b>POSITION:</b>
+			</p>
+
+			<p>
+				<b>ROW:</b>
+			</p>
+
+			<p>
+				<b>P%:</b>
+			</p>
+
+			<p>
+				<b>HOME:</b>
+			</p>
+
+			<p>
+				<b>AWAY:</b>
+			</p>
+
+			<p>
+				<b>S/O:</b>
+			</p>
+
+			<p>
+				<b>LAST 10:</b>
+			</p>
+
+			<p>
+				<b>STREAK:</b>
+			</p>
+		</div>
+
+		<div class="gdtRight">
+			<p data-gdt="***UPDATE NYR RECORD***">
+				22-15-4 (<b>48 Points</b>)
+			</p>
+
+			<p data-gdt="***UPDATE POSITION***">
+				4th &mdash; Atlantic
+			</p>
+
+			<p data-gdt="***UPDATE ROW***">
+				20
+			</p>
+
+			<p data-gdt="***UPDATE P%***">
+				.585
+			</p>
+
+			<p data-gdt="***UPDATE RECORD HOME***">
+				13-5-2
+			</p>
+
+			<p data-gdt="***UPDATE RECORD AWAY***">
+				9-10-2
+			</p>
+
+			<p data-gdt="***UPDATE S/O***">
+				3-0
+			</p>
+
+			<p data-gdt="***UPDATE LAST 10***">
+				9-1-0
+			</p>
+
+			<p data-gdt="***UPDATE STREAK***">
+				W1
+			</p>
+		</div>
+	</div>
+
+	<h3>
+		<b>Team Statistics:</b>
+	</h3>
+
+	<div class="gdtTable">
+		<div class="gdtLeft">
+			<p>
+				<b>DIFF:</b>
+			</p>
+
+			<p>
+				<b>GF/GP:</b>
+			</p>
+
+			<p>
+				<b>GA/GP:</b>
+			</p>
+
+			<p>
+				<b>PP%:</b>
+			</p>
+
+			<p>
+				<b>PK%:</b>
+			</p>
+		</div>
+
+		<div class="gdtRight">
+			<p data-gdt="***UPDATE NYR DIFF***">
+				+1 (13th)
+			</p>
+
+			<p data-gdt="***UPDATE GF/GP***">
+				3.02 (18th)
+			</p>
+
+			<p data-gdt="***UPDATE GA/GP***">
+				2.90 (12th)
+			</p>
+
+			<p data-gdt="***UPDATE PP%***">
+				16.1% (28th)
+			</p>
+
+			<p data-gdt="***UPDATE PK%***">
+				81.8% (8th)
+			</p>
+		</div>
+	</div>
+
+	<h3>
+		<b>Team Leaders:</b>
+	</h3>
+
+	<div class="gdtTable">
+		<div class="gdtLeft">
+			<p>
+				<b>Goals:</b>
+			</p>
+
+			<p>
+				<b>Assists:</b>
+			</p>
+
+			<p>
+				<b>Points:</b>
+			</p>
+
+			<p>
+				<b>+/-:</b>
+			</p>
+
+			<p>
+				<b>PIM:</b>
+			</p>
+
+			<p>
+				<b>TOI/G (D):</b>
+			</p>
+
+			<p>
+				<b>TOI/G (F):</b>
+			</p>
+		</div>
+
+		<div class="gdtRight">
+			<p data-gdt="***UPDATE NYR GOALS***">
+				Tage Thompson (21)
+			</p>
+
+			<p data-gdt="***UPDATE ASSISTS***">
+				Rasmus Dahlin (24)
+			</p>
+
+			<p data-gdt="***UPDATE POINTS***">
+				Tage Thompson (38)
+			</p>
+
+			<p data-gdt="***UPDATE +/-***">
+				Mattias Samuelsson (+17)
+			</p>
+
+			<p data-gdt="***UPDATE PIM***">
+				Alex Tuch (43)
+			</p>
+
+			<p data-gdt="***UPDATE TOI/G (D)***">
+				Rasmus Dahlin (24:08)
+			</p>
+
+			<p data-gdt="***UPDATE TOI/G (F)***">
+				Tage Thompson (18:53)
+			</p>
+		</div>
+	</div>
+
+	<h3>
+		<b>Starting Lineup:^</b>
+	</h3>
+
+	<p>
+		 Peyton Krebs / Tage Thompson <strong>A</strong> / Josh Doan<br>
+		Jason Zucker / Josh Norris / Alex Tuch <strong>A</strong><br>
+		Zach Benson / Ryan McLeod / Jack Quinn<br>
+		Jordan Greenway / Noah Ostlund / Beck Malenstyn
+	</p>
+
+	<p>
+		<br>
+		Rasmus Dahlin <strong>C</strong> / Owen Power<br>
+		Bowen Byram / Mattias Samuelsson <strong>A</strong><br>
+		Jacob Bryson / Zach Metsa
+	</p>
 
 
-        <div class="gdtTable">
-                <div class="gdtLeft">
-                        <p>
-                                <b>GS:</b>
-                        </p>
+	<h4>
+		^Subject to change
+	</h4>
+
+	<h3>
+		<b>Starting Goaltender:</b>
+	</h3>
+
+	<p>
+		Ukka Pekka Luukkonen<br>
+		&nbsp;
+	</p>
+
+	<div class="gdtTable">
+		<div class="gdtLeft">
+			<p>
+				<b>GS:</b>
+			</p>
+
+			<p>
+				<b>REC:</b>
+			</p>
+
+			<p>
+				<b>SV%:</b>
+			</p>
+
+			<p>
+				<b>GAA:</b>
+			</p>
+
+			<p>
+				<b>SO:</b>
+			</p>
+		</div>
+
+		<div class="gdtRight">
+			<p data-gdt="***UPDATE GS***">
+				15
+			</p>
+
+			<p data-gdt="***UPDATE REC***">
+				8-6-1
+			</p>
+
+			<p data-gdt="***UPDATE SV%***">
+				.903
+			</p>
+
+			<p data-gdt="***UPDATE GAA***">
+				2.61
+			</p>
+
+			<p data-gdt="***UPDATE SO***">
+				1
+			</p>
+		</div>
+	</div>
+
+	<h3>
+		<b>Injuries, Suspensions, &amp; Scratches:</b>
+	</h3>
+
+	<p>
+		Terrell Goldsmith <span class="gdtAlert">[IR]</span> &mdash; Undisclosed<br>
+		Logan Cooley <span class="gdtAlert">[IR]</span> &mdash; Lower-body injury<br>
+		Olli Maatta <span class="gdtAlert">[IR]</span> &mdash; Upper-body injury
+	</p>
+
+	<p>
+		&nbsp;
+	</p>
+
+		<hr style="width:10%">
+	<h3>
+		QUOTE(S) TO NOTE:
+	</h3>
+
+	<p>
+	***QUOTE GOES HERE***
+	</p>
+
+	<p>
+		&nbsp;
+	</p>
+
+		<h3>
+		GIF to LOL:
+	</h3>
+
+	<p>
+	***GIF GOES HERE***
+	</p>
+
+</div>
 
 
-                        <p>
-                                <b>REC:</b>
-                        </p>
-
-
-                        <p>
-                                <b>SV%:</b>
-                        </p>
-
-
-                        <p>
-                                <b>GAA:</b>
-                        </p>
-
-
-                        <p>
-                                <b>SO:</b>
-                        </p>
-                </div>
-
-
-                <div class="gdtRight">
-                        <p data-gdt="***UPDATE GAMES PLAYED***">
-							19
-						</p>
-
-
-                        <p data-gdt="***UPDATE RECORD***">
-							13-4-2
-						</p>
-
-
-                        <p data-gdt="***UPDATE SV%***">
-							.907
-						</p>
-
-
-                        <p data-gdt="***UPDATE GAA***">
-							2.61
-						</p>
-
-
-                        <p data-gdt="***UPDATE SO***">
-							2
-						</p>
-                </div>
-        </div>
-
-
-        <h3>
-                <b>Injuries, Suspensions, &amp; Scratches:</b>
-        </h3>
-
-
-		<p>
-				Adam Henrique&nbsp;<span class="gdtAlert">[IR]</span> &mdash; Undisclosed
-		</p>
-
-
-		<p>
-				Kasperi Kapanen&nbsp;<span class="gdtAlert">[IR]</span> &mdash; Undisclosed
-		</p>
-
-
-		<p>
-				&nbsp;
-		</p>
 

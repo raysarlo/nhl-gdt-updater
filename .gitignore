@@ -27,3 +27,8 @@ build/
 
 # Keep releases folder but ignore dist
 dist/
+
+# Local files
+logos/
+logos.txt
+test_output.txt
