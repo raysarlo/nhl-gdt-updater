@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NHL GDT Updater - Rangers Game Day Thread Generator</title>
+    <style>
+        :root {
+            --rangers-blue: #0038a8;
+            --rangers-red: #ce1126;
+            --rangers-white: #ffffff;
+            --bg-dark: #1a1a2e;
+            --bg-card: #16213e;
+            --text-light: #e8e8e8;
+            --text-muted: #a0a0a0;
+            --success: #28a745;
+            --error: #dc3545;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, var(--bg-dark) 0%, #0f0f23 100%);
+            color: var(--text-light);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(90deg, var(--rangers-blue), var(--rangers-red));
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 56, 168, 0.3);
+        }
+
+        header h1 {
+            font-size: 2rem;
+            margin-bottom: 8px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        header p {
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 1rem;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .card h2 {
+            color: var(--rangers-blue);
+            margin-bottom: 16px;
+            font-size: 1.25rem;
+            border-bottom: 2px solid var(--rangers-red);
+            padding-bottom: 8px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: var(--text-light);
+        }
+
+        select, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #2a2a4a;
+            border-radius: 8px;
+            background: #0d1b2a;
+            color: var(--text-light);
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+
+        select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--rangers-blue);
+        }
+
+        select {
+            cursor: pointer;
+        }
+
+        textarea {
+            min-height: 150px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.85rem;
+            resize: vertical;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 14px 28px;
+            font-size: 1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--rangers-blue), #0050d0);
+            color: white;
+            box-shadow: 0 4px 15px rgba(0, 56, 168, 0.4);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 56, 168, 0.5);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #2a2a4a;
+            color: var(--text-light);
+        }
+
+        .btn-secondary:hover {
+            background: #3a3a5a;
+        }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        #loading {
+            display: none;
+            text-align: center;
+            padding: 40px;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #2a2a4a;
+            border-top-color: var(--rangers-blue);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #result {
+            display: none;
+        }
+
+        #error {
+            display: none;
+            background: rgba(220, 53, 69, 0.1);
+            border: 1px solid var(--error);
+            color: var(--error);
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .output-container {
+            position: relative;
+        }
+
+        #output {
+            width: 100%;
+            min-height: 400px;
+            padding: 16px;
+            background: #0d1b2a;
+            border: 2px solid #2a2a4a;
+            border-radius: 8px;
+            color: var(--text-light);
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.8rem;
+            resize: vertical;
+            white-space: pre-wrap;
+        }
+
+        .copy-feedback {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: var(--success);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s;
+        }
+
+        .copy-feedback.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .preview-toggle {
+            margin-bottom: 16px;
+        }
+
+        .preview-frame {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .instructions {
+            background: rgba(0, 56, 168, 0.1);
+            border: 1px solid var(--rangers-blue);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+
+        .instructions h3 {
+            color: var(--rangers-blue);
+            margin-bottom: 8px;
+        }
+
+        .instructions ol {
+            margin-left: 20px;
+            color: var(--text-muted);
+        }
+
+        .instructions li {
+            margin-bottom: 4px;
+        }
+
+        footer {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        footer a {
+            color: var(--rangers-blue);
+            text-decoration: none;
+        }
+
+        @media (max-width: 600px) {
+            header h1 {
+                font-size: 1.5rem;
+            }
+
+            .btn-group {
+                flex-direction: column;
+            }
+
+            .btn {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>NHL Game Day Thread Generator</h1>
+            <p>New York Rangers vs. Opponent</p>
+        </header>
+
+        <div class="card">
+            <h2>Generate GDT</h2>
+
+            <div class="instructions">
+                <h3>How to use:</h3>
+                <ol>
+                    <li>Select the opponent team from the dropdown</li>
+                    <li>Click "Generate GDT" to fetch current stats</li>
+                    <li>Copy the HTML output to your forum post</li>
+                </ol>
+            </div>
+
+            <form id="gdtForm">
+                <div class="form-group">
+                    <label for="opponent">Select Opponent:</label>
+                    <select id="opponent" name="opponent" required>
+                        <option value="">-- Choose opponent --</option>
+                        {% for team in teams %}
+                        <option value="{{ team.abbrev }}">{{ team.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <details class="form-group">
+                    <summary style="cursor: pointer; color: var(--text-muted); margin-bottom: 8px;">
+                        Advanced: Custom Template (optional)
+                    </summary>
+                    <div style="margin-top: 12px;">
+                        <label for="template">Paste your custom template HTML:</label>
+                        <textarea id="template" name="template" placeholder="Leave empty to use the default template..."></textarea>
+                    </div>
+                </details>
+
+                <div class="btn-group">
+                    <button type="submit" class="btn btn-primary" id="generateBtn">
+                        <span>Generate GDT</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div id="loading" class="card">
+            <div class="spinner"></div>
+            <p>Fetching data from NHL API and DailyFaceoff...</p>
+            <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 8px;">This may take a few seconds</p>
+        </div>
+
+        <div id="error"></div>
+
+        <div id="result" class="card">
+            <h2>Generated GDT for Rangers vs. <span id="opponentName"></span></h2>
+
+            <div class="preview-toggle">
+                <button type="button" class="btn btn-secondary" id="togglePreview">Show Preview</button>
+            </div>
+
+            <div id="previewContainer" style="display: none; margin-bottom: 20px;">
+                <div class="preview-frame" id="preview"></div>
+            </div>
+
+            <div class="output-container">
+                <label for="output">HTML Output (copy this):</label>
+                <textarea id="output" readonly></textarea>
+            </div>
+
+            <div class="btn-group" style="margin-top: 16px;">
+                <button type="button" class="btn btn-success" id="copyBtn">
+                    Copy to Clipboard
+                </button>
+                <button type="button" class="btn btn-secondary" id="downloadBtn">
+                    Download HTML
+                </button>
+            </div>
+        </div>
+
+        <footer>
+            <p>Data sourced from <a href="https://www.nhl.com" target="_blank">NHL.com</a> and <a href="https://www.dailyfaceoff.com" target="_blank">DailyFaceoff.com</a></p>
+            <p style="margin-top: 8px;">Let's Go Rangers!</p>
+        </footer>
+    </div>
+
+    <div class="copy-feedback" id="copyFeedback">Copied to clipboard!</div>
+
+    <script>
+        const form = document.getElementById('gdtForm');
+        const loading = document.getElementById('loading');
+        const result = document.getElementById('result');
+        const error = document.getElementById('error');
+        const output = document.getElementById('output');
+        const preview = document.getElementById('preview');
+        const previewContainer = document.getElementById('previewContainer');
+        const opponentName = document.getElementById('opponentName');
+        const generateBtn = document.getElementById('generateBtn');
+        const copyBtn = document.getElementById('copyBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const togglePreview = document.getElementById('togglePreview');
+        const copyFeedback = document.getElementById('copyFeedback');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            // Reset UI
+            error.style.display = 'none';
+            result.style.display = 'none';
+            loading.style.display = 'block';
+            generateBtn.disabled = true;
+
+            const formData = new FormData(form);
+
+            try {
+                const response = await fetch('/generate', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                // Show result
+                output.value = data.html;
+                preview.innerHTML = data.html;
+                opponentName.textContent = data.opponent;
+                result.style.display = 'block';
+
+            } catch (err) {
+                error.textContent = err.message || 'An error occurred';
+                error.style.display = 'block';
+            } finally {
+                loading.style.display = 'none';
+                generateBtn.disabled = false;
+            }
+        });
+
+        togglePreview.addEventListener('click', () => {
+            if (previewContainer.style.display === 'none') {
+                previewContainer.style.display = 'block';
+                togglePreview.textContent = 'Hide Preview';
+            } else {
+                previewContainer.style.display = 'none';
+                togglePreview.textContent = 'Show Preview';
+            }
+        });
+
+        copyBtn.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(output.value);
+                showCopyFeedback();
+            } catch (err) {
+                // Fallback for older browsers
+                output.select();
+                document.execCommand('copy');
+                showCopyFeedback();
+            }
+        });
+
+        downloadBtn.addEventListener('click', () => {
+            const blob = new Blob([output.value], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `GDT_Rangers_vs_${opponentName.textContent.replace(/\s+/g, '_')}.html`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        function showCopyFeedback() {
+            copyFeedback.classList.add('show');
+            setTimeout(() => {
+                copyFeedback.classList.remove('show');
+            }, 2000);
+        }
+    </script>
+</body>
+</html>
