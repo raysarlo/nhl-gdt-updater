@@ -316,31 +316,30 @@ def get_game_info(game_data):
 
 
 def get_team_game_number(team_abbrev, game_date):
-    """Calculate the team's game number for the season."""
+    """Calculate the team's game number for the season based on their record.
+
+    Game number = wins + losses + OTL + 1 (for the upcoming game)
+    """
     if not game_date:
         return None
 
-    # Get team's schedule and count games up to and including this date
-    season_start = datetime(game_date.year if game_date.month >= 10 else game_date.year - 1, 10, 1)
+    # Get team standings to get their record
+    url = "https://api-web.nhle.com/v1/standings/now"
+    standings = fetch_json(url)
 
-    url = f"https://api-web.nhle.com/v1/club-schedule-season/{team_abbrev}/now"
-    data = fetch_json(url)
-
-    if not data or 'games' not in data:
+    if not standings:
         return None
 
-    game_number = 0
-    for game in data['games']:
-        game_date_str = game.get('gameDate')
-        if game_date_str:
-            try:
-                gd = datetime.strptime(game_date_str, "%Y-%m-%d")
-                if gd <= game_date:
-                    game_number += 1
-            except ValueError:
-                continue
+    all_teams = standings.get('standings', [])
+    for team in all_teams:
+        if team.get('teamAbbrev', {}).get('default') == team_abbrev:
+            wins = team.get('wins', 0)
+            losses = team.get('losses', 0)
+            otl = team.get('otLosses', 0)
+            # Game number is total games played + 1
+            return wins + losses + otl + 1
 
-    return game_number
+    return None
 
 
 def get_line_combinations(team_abbrev):
@@ -614,10 +613,12 @@ def get_goalie_stats(team_abbrev, goalie_name=None):
         wins = selected.get('wins', 0)
         losses = selected.get('losses', 0)
         otl = selected.get('overtimeLosses', 0)
+        # Calculate games played from the record (more reliable than gamesStarted)
+        games_played = wins + losses + otl
 
         return {
             'name': f"{selected.get('firstName', {}).get('default', '')} {selected.get('lastName', {}).get('default', '')}".strip(),
-            'games_started': selected.get('gamesStarted', selected.get('gamesPlayed', 0)),
+            'games_started': games_played,
             'record': f"{wins}-{losses}-{otl}",
             'sv_pct': f".{int(selected.get('savePercentage', 0) * 1000):03d}"[:4] if selected.get('savePercentage', 0) > 0 else ".000",
             'gaa': f"{selected.get('goalsAgainstAverage', 0):.2f}",
@@ -712,7 +713,20 @@ def update_team_section(content, team_abbrev, is_first_team=True):
         return content
 
     leaders = get_team_leaders(team_abbrev)
-    goalie = get_goalie_stats(team_abbrev)
+
+    # Fetch line combinations FIRST to get starting goalie name
+    print(f"Fetching line combinations for {team_abbrev} from DailyFaceoff...")
+    lines = get_line_combinations(team_abbrev)
+
+    # Get starting goalie name from DailyFaceoff, then fetch their stats
+    starting_goalie_name = None
+    if lines and lines.get('goalies') and len(lines['goalies']) > 0:
+        starting_goalie_name = lines['goalies'][0]
+        print(f"  Starting goaltender: {starting_goalie_name}")
+
+    goalie = get_goalie_stats(team_abbrev, starting_goalie_name)
+    if goalie:
+        print(f"  Goalie stats: GS={goalie['games_started']}, REC={goalie['record']}")
 
     # Extract standings data
     wins = standings.get('wins', 0)
@@ -750,159 +764,148 @@ def update_team_section(content, team_abbrev, is_first_team=True):
     streak = format_streak(streak_code, streak_count)
 
     # Split content into sections based on <hr> tags
-    # First team section is before the second <hr>, second team is after
+    # Template structure varies:
+    #   - 3 HRs: HR1=header end, HR2=first team end, HR3=second team end
+    #     First team: HR1 to HR2, Second team: HR2 to HR3
+    #   - 2 HRs: HR1=first team end, HR2=footer start
+    #     Both teams share HR1 to HR2 section
     hr_pattern = r'<hr\s+style="width:\d+%">'
     hr_matches = list(re.finditer(hr_pattern, content))
 
-    if len(hr_matches) >= 2:
+    if len(hr_matches) >= 3:
+        # 3+ HRs: Each team has its own dedicated section
         if is_first_team:
-            # First team: from start to second <hr>
-            section_start = 0
+            section_start = hr_matches[0].start()
             section_end = hr_matches[1].start()
         else:
-            # Second team: from second <hr> to third <hr> (or end)
             section_start = hr_matches[1].start()
-            section_end = hr_matches[2].start() if len(hr_matches) > 2 else len(content)
-
-        section = content[section_start:section_end]
+            section_end = hr_matches[2].start()
+    elif len(hr_matches) >= 2:
+        # 2 HRs: Both teams share the section between HR1 and HR2
+        section_start = hr_matches[0].start()
+        section_end = hr_matches[1].start()
     else:
         # Fallback: process entire content
-        section = content
         section_start = 0
         section_end = len(content)
+
+    section = content[section_start:section_end]
+    print(f"  Section: {section_start} to {section_end}, length={len(section)}")
 
     # Helper to replace content in a section
     def replace_in_section(section_content, pattern, replacement):
         return re.sub(pattern, replacement, section_content, count=1, flags=re.IGNORECASE | re.DOTALL)
 
-    # Update standings - RECORD
-    record_pattern = r'(<p\s+data-gdt="[^"]*UPDATE[^"]*RECORD[^"]*">)\s*[^<]*(<b>[^<]*</b>)?\s*(</p>)'
-    record_replacement = rf'\1\n\t\t\t\t{record} (<b>{points} Points</b>)\n\t\t\t\2'
-    # More specific pattern for record with points
-    record_pattern = r'(<p\s+data-gdt="[^"]*UPDATE[^"]*RECORD\*\*\*">)[^<]*(?:<[^>]*>[^<]*</[^>]*>)?[^<]*(</p>)'
-    record_replacement = rf'\1\n\t\t\t\t{record} (<b>{points} Points</b>)\n\t\t\t\2'
-    section = replace_in_section(section, record_pattern, record_replacement)
+    # Update standings, team stats, and team leaders
+    # Each team has its own dedicated section (Rangers: HR1-HR2, Opponent: HR2-HR3)
+    # so both teams can safely update their respective markers
+    if True:  # Process for both teams
+        # Update standings - RECORD (look for NYR RECORD specifically to avoid matching HOME/AWAY)
+        # Pattern matches data-gdt values containing "NYR" and "RECORD" (e.g., "***UPDATE NYR RECORD***")
+        record_pattern = r'(<p\s+data-gdt="[^"]*NYR[^"]*RECORD[^"]*">).*?(</p>)'
+        record_replacement = rf'\1\n\t\t\t\t{record} (<b>{points} Points</b>)\n\t\t\t\2'
+        section = replace_in_section(section, record_pattern, record_replacement)
 
-    # Update POSITION
-    pos_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*POSITION[^"]*">)\s*[^<]*(</p>)'
-    pos_replacement = rf'\1\n\t\t\t\t{ordinal(div_rank)} &mdash; {div_name}\n\t\t\t\2'
-    section = replace_in_section(section, pos_pattern, pos_replacement)
+        # Update POSITION
+        pos_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*POSITION[^"]*">)\s*[^<]*(</p>)'
+        pos_replacement = rf'\1\n\t\t\t\t{ordinal(div_rank)} &mdash; {div_name}\n\t\t\t\2'
+        section = replace_in_section(section, pos_pattern, pos_replacement)
 
-    # Update ROW
-    row_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*ROW[^"]*">)\s*[^<]*(</p>)'
-    row_replacement = rf'\1\n\t\t\t\t{row}\n\t\t\t\2'
-    section = replace_in_section(section, row_pattern, row_replacement)
+        # Update ROW
+        row_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*ROW[^"]*">)\s*[^<]*(</p>)'
+        row_replacement = rf'\1\n\t\t\t\t{row}\n\t\t\t\2'
+        section = replace_in_section(section, row_pattern, row_replacement)
 
-    # Update P%
-    pct_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*P%[^"]*">)\s*[^<]*(</p>)'
-    pct_str = f".{int(pts_pct * 1000):03d}"[:4]
-    pct_replacement = rf'\1\n\t\t\t\t{pct_str}\n\t\t\t\2'
-    section = replace_in_section(section, pct_pattern, pct_replacement)
+        # Update P%
+        pct_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*P%[^"]*">)\s*[^<]*(</p>)'
+        pct_str = f".{int(pts_pct * 1000):03d}"[:4]
+        pct_replacement = rf'\1\n\t\t\t\t{pct_str}\n\t\t\t\2'
+        section = replace_in_section(section, pct_pattern, pct_replacement)
 
-    # Update HOME record
-    home_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*RECORD\s*HOME[^"]*">)\s*[^<]*(</p>)'
-    home_replacement = rf'\1\n\t\t\t\t{home_record}\n\t\t\t\2'
-    section = replace_in_section(section, home_pattern, home_replacement)
+        # Update HOME record
+        home_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*RECORD\s*HOME[^"]*">)\s*[^<]*(</p>)'
+        home_replacement = rf'\1\n\t\t\t\t{home_record}\n\t\t\t\2'
+        section = replace_in_section(section, home_pattern, home_replacement)
 
-    # Update AWAY record
-    away_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*RECORD\s*AWAY[^"]*">)\s*[^<]*(</p>)'
-    away_replacement = rf'\1\n\t\t\t\t{road_record}\n\t\t\t\2'
-    section = replace_in_section(section, away_pattern, away_replacement)
+        # Update AWAY record
+        away_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*RECORD\s*AWAY[^"]*">)\s*[^<]*(</p>)'
+        away_replacement = rf'\1\n\t\t\t\t{road_record}\n\t\t\t\2'
+        section = replace_in_section(section, away_pattern, away_replacement)
 
-    # Update S/O record
-    so_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*S/O[^"]*">)\s*[^<]*(</p>)'
-    so_replacement = rf'\1\n\t\t\t\t{so_record}\n\t\t\t\2'
-    section = replace_in_section(section, so_pattern, so_replacement)
+        # Update S/O record
+        so_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*S/O[^"]*">)\s*[^<]*(</p>)'
+        so_replacement = rf'\1\n\t\t\t\t{so_record}\n\t\t\t\2'
+        section = replace_in_section(section, so_pattern, so_replacement)
 
-    # Update LAST 10
-    l10_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*LAST\s*10[^"]*">)\s*[^<]*(</p>)'
-    l10_replacement = rf'\1\n\t\t\t\t{l10_record}\n\t\t\t\2'
-    section = replace_in_section(section, l10_pattern, l10_replacement)
+        # Update LAST 10
+        l10_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*LAST\s*10[^"]*">)\s*[^<]*(</p>)'
+        l10_replacement = rf'\1\n\t\t\t\t{l10_record}\n\t\t\t\2'
+        section = replace_in_section(section, l10_pattern, l10_replacement)
 
-    # Update STREAK
-    streak_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*STREAK[^"]*">)\s*[^<]*(</p>)'
-    streak_replacement = rf'\1\n\t\t\t\t{streak}\n\t\t\t\2'
-    section = replace_in_section(section, streak_pattern, streak_replacement)
+        # Update STREAK
+        streak_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*STREAK[^"]*">)\s*[^<]*(</p>)'
+        streak_replacement = rf'\1\n\t\t\t\t{streak}\n\t\t\t\2'
+        section = replace_in_section(section, streak_pattern, streak_replacement)
 
-    # Update Team Statistics
-    if stats:
-        diff_str = f"+{stats['diff']}" if stats['diff'] > 0 else str(stats['diff'])
+        # Update Team Statistics
+        if stats:
+            diff_str = f"+{stats['diff']}" if stats['diff'] > 0 else str(stats['diff'])
 
-        diff_pattern = r'(<p\s+data-gdt="[^"]*UPDATE[^"]*DIFF[^"]*">)\s*[^<]*(</p>)'
-        diff_replacement = rf'\1\n\t\t\t\t{diff_str} ({ordinal(stats["diff_rank"])})\n\t\t\t\2'
-        section = replace_in_section(section, diff_pattern, diff_replacement)
+            # Pattern matches data-gdt values containing "NYR" and "DIFF" (e.g., "***UPDATE NYR DIFF***")
+            diff_pattern = r'(<p\s+data-gdt="[^"]*NYR[^"]*DIFF[^"]*">).*?(</p>)'
+            diff_replacement = rf'\1\n\t\t\t\t{diff_str} ({ordinal(stats["diff_rank"])})\n\t\t\t\2'
+            section = replace_in_section(section, diff_pattern, diff_replacement)
 
-        gfgp_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GF/GP[^"]*">)\s*[^<]*(</p>)'
-        gfgp_replacement = rf'\1\n\t\t\t\t{stats["gf_per_game"]:.2f} ({ordinal(stats["gf_rank"])})\n\t\t\t\2'
-        section = replace_in_section(section, gfgp_pattern, gfgp_replacement)
+            gfgp_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GF/GP[^"]*">)\s*[^<]*(</p>)'
+            gfgp_replacement = rf'\1\n\t\t\t\t{stats["gf_per_game"]:.2f} ({ordinal(stats["gf_rank"])})\n\t\t\t\2'
+            section = replace_in_section(section, gfgp_pattern, gfgp_replacement)
 
-        gagp_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GA/GP[^"]*">)\s*[^<]*(</p>)'
-        gagp_replacement = rf'\1\n\t\t\t\t{stats["ga_per_game"]:.2f} ({ordinal(stats["ga_rank"])})\n\t\t\t\2'
-        section = replace_in_section(section, gagp_pattern, gagp_replacement)
+            gagp_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GA/GP[^"]*">)\s*[^<]*(</p>)'
+            gagp_replacement = rf'\1\n\t\t\t\t{stats["ga_per_game"]:.2f} ({ordinal(stats["ga_rank"])})\n\t\t\t\2'
+            section = replace_in_section(section, gagp_pattern, gagp_replacement)
 
-        pp_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*PP%[^"]*">)\s*[^<]*(</p>)'
-        pp_replacement = rf'\1\n\t\t\t\t{stats["pp_pct"]}% ({ordinal(stats["pp_rank"])})\n\t\t\t\2'
-        section = replace_in_section(section, pp_pattern, pp_replacement)
+            pp_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*PP%[^"]*">)\s*[^<]*(</p>)'
+            pp_replacement = rf'\1\n\t\t\t\t{stats["pp_pct"]}% ({ordinal(stats["pp_rank"])})\n\t\t\t\2'
+            section = replace_in_section(section, pp_pattern, pp_replacement)
 
-        pk_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*PK%[^"]*">)\s*[^<]*(</p>)'
-        pk_replacement = rf'\1\n\t\t\t\t{stats["pk_pct"]}% ({ordinal(stats["pk_rank"])})\n\t\t\t\2'
-        section = replace_in_section(section, pk_pattern, pk_replacement)
+            pk_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*PK%[^"]*">)\s*[^<]*(</p>)'
+            pk_replacement = rf'\1\n\t\t\t\t{stats["pk_pct"]}% ({ordinal(stats["pk_rank"])})\n\t\t\t\2'
+            section = replace_in_section(section, pk_pattern, pk_replacement)
 
-    # Update Team Leaders
-    goals_pattern = r'(<p\s+data-gdt="[^"]*UPDATE[^"]*GOALS[^"]*">)\s*[^<]*(</p>)'
-    goals_replacement = rf'\1\n\t\t\t\t{leaders["goals"]["name"]} ({leaders["goals"]["value"]})\n\t\t\t\2'
-    section = replace_in_section(section, goals_pattern, goals_replacement)
+        # Update Team Leaders
+        # Pattern matches data-gdt values containing "NYR" and "GOALS" (e.g., "***UPDATE NYR GOALS***")
+        goals_pattern = r'(<p\s+data-gdt="[^"]*NYR[^"]*GOALS[^"]*">).*?(</p>)'
+        goals_replacement = rf'\1\n\t\t\t\t{leaders["goals"]["name"]} ({leaders["goals"]["value"]})\n\t\t\t\2'
+        section = replace_in_section(section, goals_pattern, goals_replacement)
 
-    assists_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*ASSISTS[^"]*">)\s*[^<]*(</p>)'
-    assists_replacement = rf'\1\n\t\t\t\t{leaders["assists"]["name"]} ({leaders["assists"]["value"]})\n\t\t\t\2'
-    section = replace_in_section(section, assists_pattern, assists_replacement)
+        assists_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*ASSISTS[^"]*">)\s*[^<]*(</p>)'
+        assists_replacement = rf'\1\n\t\t\t\t{leaders["assists"]["name"]} ({leaders["assists"]["value"]})\n\t\t\t\2'
+        section = replace_in_section(section, assists_pattern, assists_replacement)
 
-    points_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*POINTS[^"]*">)\s*[^<]*(</p>)'
-    points_replacement = rf'\1\n\t\t\t\t{leaders["points"]["name"]} ({leaders["points"]["value"]})\n\t\t\t\2'
-    section = replace_in_section(section, points_pattern, points_replacement)
+        points_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*POINTS[^"]*">)\s*[^<]*(</p>)'
+        points_replacement = rf'\1\n\t\t\t\t{leaders["points"]["name"]} ({leaders["points"]["value"]})\n\t\t\t\2'
+        section = replace_in_section(section, points_pattern, points_replacement)
 
-    plusminus_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*\+/-[^"]*">)\s*[^<]*(</p>)'
-    plusminus_replacement = rf'\1\n\t\t\t\t{leaders["plusMinus"]["name"]} ({leaders["plusMinus"]["value"]})\n\t\t\t\2'
-    section = replace_in_section(section, plusminus_pattern, plusminus_replacement)
+        plusminus_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*\+/-[^"]*">)\s*[^<]*(</p>)'
+        plusminus_replacement = rf'\1\n\t\t\t\t{leaders["plusMinus"]["name"]} ({leaders["plusMinus"]["value"]})\n\t\t\t\2'
+        section = replace_in_section(section, plusminus_pattern, plusminus_replacement)
 
-    pim_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*PIM[^"]*">)\s*[^<]*(</p>)'
-    pim_replacement = rf'\1\n\t\t\t\t{leaders["pim"]["name"]} ({leaders["pim"]["value"]})\n\t\t\t\2'
-    section = replace_in_section(section, pim_pattern, pim_replacement)
+        pim_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*PIM[^"]*">)\s*[^<]*(</p>)'
+        pim_replacement = rf'\1\n\t\t\t\t{leaders["pim"]["name"]} ({leaders["pim"]["value"]})\n\t\t\t\2'
+        section = replace_in_section(section, pim_pattern, pim_replacement)
 
-    toid_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*TOI/G\s*\(D\)[^"]*">)\s*[^<]*(</p>)'
-    toid_replacement = rf'\1\n\t\t\t\t{leaders["toi_d"]["name"]} ({leaders["toi_d"]["value"]})\n\t\t\t\2'
-    section = replace_in_section(section, toid_pattern, toid_replacement)
+        toid_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*TOI/G\s*\(D\)[^"]*">)\s*[^<]*(</p>)'
+        toid_replacement = rf'\1\n\t\t\t\t{leaders["toi_d"]["name"]} ({leaders["toi_d"]["value"]})\n\t\t\t\2'
+        section = replace_in_section(section, toid_pattern, toid_replacement)
 
-    toif_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*TOI/G\s*\(F\)[^"]*">)\s*[^<]*(</p>)'
-    toif_replacement = rf'\1\n\t\t\t\t{leaders["toi_f"]["name"]} ({leaders["toi_f"]["value"]})\n\t\t\t\2'
-    section = replace_in_section(section, toif_pattern, toif_replacement)
+        toif_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*TOI/G\s*\(F\)[^"]*">)\s*[^<]*(</p>)'
+        toif_replacement = rf'\1\n\t\t\t\t{leaders["toi_f"]["name"]} ({leaders["toi_f"]["value"]})\n\t\t\t\2'
+        section = replace_in_section(section, toif_pattern, toif_replacement)
 
-    # Update goaltender stats
-    if goalie:
-        gs_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GS[^"]*">)\s*[^<]*(</p>)'
-        gs_replacement = rf'\1\n\t\t\t\t{goalie["games_started"]}\n\t\t\t\2'
-        section = replace_in_section(section, gs_pattern, gs_replacement)
-
-        rec_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*REC[^"]*">)\s*[^<]*(</p>)'
-        rec_replacement = rf'\1\n\t\t\t\t{goalie["record"]}\n\t\t\t\2'
-        section = replace_in_section(section, rec_pattern, rec_replacement)
-
-        sv_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*SV%[^"]*">)\s*[^<]*(</p>)'
-        sv_replacement = rf'\1\n\t\t\t\t{goalie["sv_pct"]}\n\t\t\t\2'
-        section = replace_in_section(section, sv_pattern, sv_replacement)
-
-        gaa_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GAA[^"]*">)\s*[^<]*(</p>)'
-        gaa_replacement = rf'\1\n\t\t\t\t{goalie["gaa"]}\n\t\t\t\2'
-        section = replace_in_section(section, gaa_pattern, gaa_replacement)
-
-        so_stat_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*SO[^"]*">)\s*[^<]*(</p>)'
-        so_stat_replacement = rf'\1\n\t\t\t\t{goalie["shutouts"]}\n\t\t\t\2'
-        section = replace_in_section(section, so_stat_pattern, so_stat_replacement)
-
-    # Fetch and update line combinations
-    print(f"Fetching line combinations for {team_abbrev} from DailyFaceoff...")
-    lines = get_line_combinations(team_abbrev)
-
+    # Update line combinations (already fetched earlier)
+    # The template has different structures for Rangers vs opponent:
+    #   - Rangers (before HR1): Only has defense pairs (no "Starting Lineup" header), then Starting Goaltender
+    #   - Opponent (after HR1): Has full "Starting Lineup" section with forwards and defense
     if lines:
         # Build forward lines
         forward_lines = []
@@ -912,13 +915,6 @@ def update_team_section(content, team_abbrev, is_first_team=True):
             elif len(line) > 0:
                 forward_lines.append(" / ".join(line))
 
-        if forward_lines:
-            forwards_html = "<br>\n\t\t".join(forward_lines)
-            # Match everything between <p> after "Starting Lineup" and the next </p>, including nested tags
-            lineup_pattern = r'(<b>Starting Lineup:\^?</b>\s*</h3>\s*<p>).*?(</p>\s*<p>)'
-            lineup_replacement = rf'\1\n\t\t{forwards_html}\n\t\2'
-            section = replace_in_section(section, lineup_pattern, lineup_replacement)
-
         # Build defense pairs
         defense_pairs = []
         for pair in lines['defense']:
@@ -927,33 +923,84 @@ def update_team_section(content, team_abbrev, is_first_team=True):
             elif len(pair) > 0:
                 defense_pairs.append(pair[0])
 
-        if defense_pairs:
-            defense_html = "<br>\n\t\t".join(defense_pairs)
-            # Find the defense section - handles two patterns:
-            # 1. First team: <p>&nbsp;</p> then <p>defense</p>
-            # 2. Second team: <p><br>defense</p>
-            # Try pattern 1 first (with &nbsp; spacer)
-            defense_pattern1 = r'(&nbsp;\s*</p>\s*<p>).*?(</p>\s*(?:<h4>|<h3>\s*<b>Starting Goaltender))'
-            defense_replacement = rf'\1\n\t\t{defense_html}\n\t\2'
-            new_section = re.sub(defense_pattern1, defense_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+        # For 3-HR template: Each team has a dedicated section starting at an HR
+        # Update both forwards and defense in a single pass to avoid pattern matching issues
+        forwards_html = "<br>\n\t\t".join(forward_lines) if forward_lines else ""
+        defense_html = "<br>\n\t\t".join(defense_pairs) if defense_pairs else ""
 
-            # If pattern 1 didn't match (section unchanged), try pattern 2 (with <br> start)
-            if new_section == section:
-                defense_pattern2 = r'(</p>\s*<p>\s*)<br>.*?(</p>\s*(?:<h4>|<h3>\s*<b>Starting Goaltender))'
-                defense_replacement2 = rf'\1\n\t\t{defense_html}\n\t\2'
-                new_section = re.sub(defense_pattern2, defense_replacement2, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+        if is_first_team:
+            # Rangers: forwards then &nbsp; spacer then defense
+            if forward_lines and defense_pairs:
+                lineup_pattern = r'(<b>Starting Lineup:\^?</b>\s*</h3>\s*<p>).*?(</p>\s*<p>\s*&nbsp;\s*</p>\s*<p>).*?(</p>\s*<h3>\s*<b>Starting Goaltender)'
+                lineup_replacement = rf'\1\n\t\t{forwards_html}\n\t\2\n\t\t{defense_html}\n\t\3'
+                section = re.sub(lineup_pattern, lineup_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+            elif forward_lines:
+                lineup_pattern = r'(<b>Starting Lineup:\^?</b>\s*</h3>\s*<p>).*?(</p>\s*<p>)'
+                lineup_replacement = rf'\1\n\t\t{forwards_html}\n\t\2'
+                section = re.sub(lineup_pattern, lineup_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+        else:
+            # Opponent: forwards then defense with <br> prefix
+            if forward_lines and defense_pairs:
+                lineup_pattern = r'(<b>Starting Lineup:\^?</b>\s*</h3>\s*<p>).*?(</p>\s*<p>\s*(?:<br>\s*)?).*?(</p>\s*(?:<h4>|<h3>\s*<b>Starting Goaltender))'
+                lineup_replacement = rf'\1\n\t\t{forwards_html}\n\t\2\n\t\t{defense_html}\n\t\3'
+                section = re.sub(lineup_pattern, lineup_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+            elif forward_lines:
+                lineup_pattern = r'(<b>Starting Lineup:\^?</b>\s*</h3>\s*<p>).*?(</p>\s*<p>)'
+                lineup_replacement = rf'\1\n\t\t{forwards_html}\n\t\2'
+                section = re.sub(lineup_pattern, lineup_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
 
-            section = new_section
-
-        # Update starting goaltender name
-        if lines['goalies'] and len(lines['goalies']) > 0:
-            goalie_name = lines['goalies'][0]
+        # Update starting goaltender name - process entire section since each team has dedicated section
+        if starting_goalie_name:
             goalie_name_pattern = r'(<b>Starting Goaltender:</b>\s*</h3>\s*<p>)\s*[^<\n]+(<br>|&nbsp;)'
-            goalie_name_replacement = rf'\1\n\t\t{goalie_name}\2'
-            section = replace_in_section(section, goalie_name_pattern, goalie_name_replacement)
-            print(f"  Starting goaltender: {goalie_name}")
+            goalie_name_replacement = rf'\1\n\t\t{starting_goalie_name}\2'
+            section = re.sub(goalie_name_pattern, goalie_name_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
 
         print(f"  Line combinations updated ({len(forward_lines)} forward lines, {len(defense_pairs)} defense pairs)")
+
+    # Update goaltender stats (AFTER line combinations to avoid being overwritten)
+    # Each team has a dedicated section, so process the entire section
+    if goalie:
+        gs_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GS[^"]*">)\s*[^<]*(</p>)'
+        gs_replacement = rf'\1\n\t\t\t\t{goalie["games_started"]}\n\t\t\t\2'
+        section = re.sub(gs_pattern, gs_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+
+        rec_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s+REC\*\*\*">)\s*[^<]*(</p>)'
+        rec_replacement = rf'\1\n\t\t\t\t{goalie["record"]}\n\t\t\t\2'
+        section = re.sub(rec_pattern, rec_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+
+        sv_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*SV%[^"]*">)\s*[^<]*(</p>)'
+        sv_replacement = rf'\1\n\t\t\t\t{goalie["sv_pct"]}\n\t\t\t\2'
+        section = re.sub(sv_pattern, sv_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+
+        gaa_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GAA[^"]*">)\s*[^<]*(</p>)'
+        gaa_replacement = rf'\1\n\t\t\t\t{goalie["gaa"]}\n\t\t\t\2'
+        section = re.sub(gaa_pattern, gaa_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+
+        so_stat_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*SO[^"]*">)\s*[^<]*(</p>)'
+        so_stat_replacement = rf'\1\n\t\t\t\t{goalie["shutouts"]}\n\t\t\t\2'
+        section = re.sub(so_stat_pattern, so_stat_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+
+    # Update injuries section
+    if lines and lines.get('injuries'):
+        injuries_list = lines['injuries']
+        if injuries_list:
+            # Build injuries HTML
+            injury_lines = []
+            for inj in injuries_list:
+                name = inj.get('name', 'Unknown')
+                status = inj.get('status', 'IR')
+                detail = inj.get('detail', 'Undisclosed')
+                injury_lines.append(f'{name} <span class="gdtAlert">[{status}]</span> &mdash; {detail}')
+
+            injuries_html = "<br>\n\t\t".join(injury_lines)
+
+            # Pattern to match the first <p> after "Injuries, Suspensions, & Scratches" header
+            # and replace its content (may span multiple <p> tags until the next section)
+            injuries_pattern = r'(<b>Injuries,\s*Suspensions,\s*(?:&amp;|&)\s*Scratches:</b>\s*</h3>\s*<p>).*?(</p>\s*<p>\s*&nbsp;\s*</p>)'
+            injuries_replacement = rf'\1\n\t\t{injuries_html}\n\t\2'
+            section = re.sub(injuries_pattern, injuries_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
+
+            print(f"  Injuries updated ({len(injuries_list)} entries)")
 
     # Reconstruct content
     content = content[:section_start] + section + content[section_end:]
