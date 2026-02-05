@@ -129,6 +129,36 @@ DAILYFACEOFF_SLUGS = {
     "VGK": "vegas-golden-knights", "WSH": "washington-capitals", "WPG": "winnipeg-jets",
 }
 
+# LineupExperts URL slugs (Title-Case-With-Hyphens format)
+LINEUPEXPERTS_SLUGS = {
+    "ANA": "Anaheim-Ducks", "ARI": "Arizona-Coyotes", "BOS": "Boston-Bruins",
+    "BUF": "Buffalo-Sabres", "CGY": "Calgary-Flames", "CAR": "Carolina-Hurricanes",
+    "CHI": "Chicago-Blackhawks", "COL": "Colorado-Avalanche", "CBJ": "Columbus-Blue-Jackets",
+    "DAL": "Dallas-Stars", "DET": "Detroit-Red-Wings", "EDM": "Edmonton-Oilers",
+    "FLA": "Florida-Panthers", "LAK": "Los-Angeles-Kings", "MIN": "Minnesota-Wild",
+    "MTL": "Montreal-Canadiens", "NSH": "Nashville-Predators", "NJD": "New-Jersey-Devils",
+    "NYI": "New-York-Islanders", "NYR": "New-York-Rangers", "OTT": "Ottawa-Senators",
+    "PHI": "Philadelphia-Flyers", "PIT": "Pittsburgh-Penguins", "SJS": "San-Jose-Sharks",
+    "SEA": "Seattle-Kraken", "STL": "St-Louis-Blues", "TBL": "Tampa-Bay-Lightning",
+    "TOR": "Toronto-Maple-Leafs", "UTA": "Utah-Hockey-Club", "VAN": "Vancouver-Canucks",
+    "VGK": "Vegas-Golden-Knights", "WSH": "Washington-Capitals", "WPG": "Winnipeg-Jets",
+}
+
+# ESPN team names for matching in injuries page
+ESPN_TEAM_NAMES = {
+    "ANA": "Anaheim Ducks", "ARI": "Arizona Coyotes", "BOS": "Boston Bruins",
+    "BUF": "Buffalo Sabres", "CGY": "Calgary Flames", "CAR": "Carolina Hurricanes",
+    "CHI": "Chicago Blackhawks", "COL": "Colorado Avalanche", "CBJ": "Columbus Blue Jackets",
+    "DAL": "Dallas Stars", "DET": "Detroit Red Wings", "EDM": "Edmonton Oilers",
+    "FLA": "Florida Panthers", "LAK": "Los Angeles Kings", "MIN": "Minnesota Wild",
+    "MTL": "Montreal Canadiens", "NSH": "Nashville Predators", "NJD": "New Jersey Devils",
+    "NYI": "New York Islanders", "NYR": "New York Rangers", "OTT": "Ottawa Senators",
+    "PHI": "Philadelphia Flyers", "PIT": "Pittsburgh Penguins", "SJS": "San Jose Sharks",
+    "SEA": "Seattle Kraken", "STL": "St. Louis Blues", "TBL": "Tampa Bay Lightning",
+    "TOR": "Toronto Maple Leafs", "UTA": "Utah Hockey Club", "VAN": "Vancouver Canucks",
+    "VGK": "Vegas Golden Knights", "WSH": "Washington Capitals", "WPG": "Winnipeg Jets",
+}
+
 
 def fetch_json(url):
     """Fetch JSON data from a URL."""
@@ -374,8 +404,225 @@ def get_team_game_number(team_abbrev, game_date):
     return None
 
 
-def get_line_combinations(team_abbrev):
-    """Fetch line combinations from DailyFaceoff."""
+def get_lineupexperts_lines(team_abbrev):
+    """Fetch forward lines and defense pairs from LineupExperts."""
+    slug = LINEUPEXPERTS_SLUGS.get(team_abbrev)
+    if not slug:
+        print(f"  No LineupExperts slug found for {team_abbrev}")
+        return None
+
+    url = f"https://www.lineupexperts.com/hockey/line-combinations/{slug}"
+    html = fetch_html(url)
+
+    if not html:
+        return None
+
+    lines = {
+        'forwards': [[], [], [], []],
+        'defense': [[], [], []]
+    }
+
+    # Extract player names from href="/hockey/player-pop/{slug}" links
+    # Players appear in order: forwards (4 lines x 3), then defense (3 pairs x 2)
+    player_pattern = r'href="/hockey/player-pop/([a-z0-9.-]+)"'
+    player_slugs = re.findall(player_pattern, html.lower())
+
+    # Deduplicate while preserving order (players may appear multiple times)
+    seen = set()
+    unique_slugs = []
+    for s in player_slugs:
+        if s not in seen:
+            seen.add(s)
+            unique_slugs.append(s)
+
+    player_names = [slug_to_name(s) for s in unique_slugs]
+
+    # First 12 players are forwards (4 lines of 3)
+    for i, name in enumerate(player_names[:12]):
+        line_num = i // 3
+        if line_num < 4:
+            lines['forwards'][line_num].append(name)
+
+    # Next 6 players are defensemen (3 pairs of 2)
+    for i, name in enumerate(player_names[12:18]):
+        pair_num = i // 2
+        if pair_num < 3:
+            lines['defense'][pair_num].append(name)
+
+    return lines
+
+
+def get_rotowire_starting_goalie(team_abbrev):
+    """Fetch starting goalie from RotoWire NHL Lineups page."""
+    url = "https://www.rotowire.com/hockey/nhl-lineups.php"
+    html = fetch_html(url)
+
+    if not html:
+        return None
+
+    # RotoWire page has multiple game boxes, each with visit and home lineups
+    # Split by game boxes and find the one containing our team
+    games = re.split(r'<div class="lineup__box"', html)
+
+    for game in games:
+        # Check if this game contains our team
+        if f'>{team_abbrev}<' not in game:
+            continue
+
+        # Find all team abbreviations in this game
+        abbrevs = re.findall(r'lineup__abbr">([A-Z]{2,4})</div>', game)
+        if team_abbrev not in abbrevs:
+            continue
+
+        # Determine if our team is home or visitor
+        # The structure is: visit team section, then home team section
+        # lineup__team with is-visit or is-home before lineup__abbr
+        team_pos = game.find(f'>{team_abbrev}<')
+
+        # Check what comes before - is-home or is-visit
+        before_team = game[:team_pos]
+        last_is_home = before_team.rfind('is-home')
+        last_is_visit = before_team.rfind('is-visit')
+
+        if last_is_home > last_is_visit:
+            lineup_type = 'is-home'
+        else:
+            lineup_type = 'is-visit'
+
+        # Find the lineup list for our team's position
+        lineup_pattern = rf'lineup__list {lineup_type}">(.*?)(?:lineup__list|</div>\s*</div>\s*</div>)'
+        lineup_match = re.search(lineup_pattern, game, re.DOTALL)
+
+        if not lineup_match:
+            continue
+
+        lineup = lineup_match.group(1)
+
+        # Extract goalie from lineup__player-highlight-name
+        goalie_pattern = r'lineup__player-highlight-name[^>]*>.*?<a[^>]*>([^<]+)</a>'
+        goalie_match = re.search(goalie_pattern, lineup, re.DOTALL)
+
+        if goalie_match:
+            goalie_name = goalie_match.group(1).strip()
+
+            # Get confirmation status
+            status = 'expected'
+            if 'is-confirmed' in lineup:
+                status = 'confirmed'
+
+            return {'name': goalie_name, 'status': status}
+
+    return None
+
+
+def get_espn_injuries(team_abbrev):
+    """Fetch injuries from ESPN with status (IR, DTD, Out, etc.)."""
+    url = "https://www.espn.com/nhl/injuries"
+    html = fetch_html(url)
+
+    if not html:
+        return []
+
+    injuries = []
+    team_name = ESPN_TEAM_NAMES.get(team_abbrev)
+    if not team_name:
+        print(f"  No ESPN team name found for {team_abbrev}")
+        return []
+
+    # ESPN structure: <span class="injuries__teamName ml2">Team Name</span>
+    # followed by tbody with injury rows
+    team_marker = f'injuries__teamName[^>]*>{team_name}<'
+    team_match = re.search(team_marker, html)
+
+    if not team_match:
+        # Try case-insensitive search
+        team_marker = f'injuries__teamName[^>]*>{re.escape(team_name)}<'
+        team_match = re.search(team_marker, html, re.IGNORECASE)
+
+    if not team_match:
+        return []
+
+    team_start = team_match.end()
+
+    # Find the tbody after this team name
+    tbody_start = html.find('<tbody', team_start)
+    if tbody_start == -1:
+        return []
+
+    tbody_end = html.find('</tbody>', tbody_start)
+    if tbody_end == -1:
+        return []
+
+    team_section = html[tbody_start:tbody_end]
+
+    # Find all table rows
+    rows = re.findall(r'<tr[^>]*>(.*?)</tr>', team_section, re.DOTALL | re.IGNORECASE)
+
+    for row in rows:
+        # Skip header rows
+        if '<th' in row.lower():
+            continue
+
+        # Extract player name from link
+        name_match = re.search(r'href="[^"]*player[^"]*"[^>]*>([^<]+)</a>', row)
+        if not name_match:
+            continue
+
+        player_name = name_match.group(1).strip()
+
+        # Skip if it looks like a team name
+        if player_name in ESPN_TEAM_NAMES.values():
+            continue
+
+        # Find status - ESPN uses TextStatus span
+        status = "IR"  # Default
+        status_match = re.search(r'TextStatus[^>]*>([^<]+)</span>', row)
+        if status_match:
+            status_text = status_match.group(1).strip().lower()
+            if 'day-to-day' in status_text:
+                status = "DTD"
+            elif 'out' in status_text:
+                status = "OUT"
+            elif 'suspension' in status_text:
+                status = "SUSP"
+            elif 'injured reserve' in status_text:
+                status = "IR"
+            elif 'questionable' in status_text:
+                status = "Q"
+            elif 'doubtful' in status_text:
+                status = "D"
+            elif 'probable' in status_text:
+                status = "P"
+
+        # Try to find injury detail from comment column
+        detail = "Undisclosed"
+        # ESPN has col-desc for comments
+        desc_match = re.search(r'col-desc[^>]*>([^<]*)</td>', row)
+        if desc_match and desc_match.group(1).strip():
+            detail = desc_match.group(1).strip()
+        else:
+            # Try finding injury type in any text
+            detail_patterns = [
+                r'(?:lower|upper)\s*body',
+                r'(?:head|knee|ankle|shoulder|back|hip|wrist|hand|groin|leg|arm|foot|neck|concussion|illness|personal)',
+            ]
+            for pattern in detail_patterns:
+                detail_match = re.search(pattern, row, re.IGNORECASE)
+                if detail_match:
+                    detail = detail_match.group(0).title()
+                    break
+
+        injuries.append({
+            'name': player_name,
+            'status': status,
+            'detail': detail
+        })
+
+    return injuries
+
+
+def get_dailyfaceoff_lines(team_abbrev):
+    """Fetch line combinations from DailyFaceoff (fallback source)."""
     slug = DAILYFACEOFF_SLUGS.get(team_abbrev)
     if not slug:
         print(f"No DailyFaceoff slug found for {team_abbrev}")
@@ -450,6 +697,83 @@ def get_line_combinations(team_abbrev):
                     'status': status,
                     'detail': "Undisclosed"
                 })
+
+    return lines
+
+
+def get_line_combinations(team_abbrev):
+    """
+    Fetch line combinations from multiple sources.
+
+    Priority:
+    1. LineupExperts for forwards/defense
+    2. RotoWire for starting goalie
+    3. ESPN for injuries (with status: IR, DTD, Out, Suspension)
+    4. DailyFaceoff as fallback if primary sources fail
+    """
+    lines = {
+        'forwards': [[], [], [], []],
+        'defense': [[], [], []],
+        'goalies': [],
+        'injuries': []
+    }
+
+    # 1. Get forwards and defense from LineupExperts
+    print(f"  Fetching line combinations from LineupExperts...")
+    le_lines = get_lineupexperts_lines(team_abbrev)
+    if le_lines:
+        lines['forwards'] = le_lines.get('forwards', lines['forwards'])
+        lines['defense'] = le_lines.get('defense', lines['defense'])
+        fwd_count = sum(len(l) for l in lines['forwards'])
+        def_count = sum(len(p) for p in lines['defense'])
+        print(f"  LineupExperts: Got {fwd_count} forwards, {def_count} defensemen")
+    else:
+        print(f"  LineupExperts: Failed to fetch")
+
+    # 2. Get starting goalie from RotoWire
+    print(f"  Fetching starting goalie from RotoWire...")
+    rw_goalie = get_rotowire_starting_goalie(team_abbrev)
+    if rw_goalie:
+        lines['goalies'] = [rw_goalie['name']]
+        status_str = f" ({rw_goalie['status']})" if rw_goalie.get('status') else ""
+        print(f"  RotoWire: Starting goalie = {rw_goalie['name']}{status_str}")
+    else:
+        print(f"  RotoWire: No starting goalie found (team may not play today)")
+
+    # 3. Get injuries from ESPN
+    print(f"  Fetching injuries from ESPN...")
+    espn_injuries = get_espn_injuries(team_abbrev)
+    if espn_injuries:
+        lines['injuries'] = espn_injuries
+        print(f"  ESPN: Got {len(espn_injuries)} injuries")
+    else:
+        print(f"  ESPN: No injuries found or failed to fetch")
+
+    # 4. Fallback to DailyFaceoff if primary sources failed
+    needs_fallback = (
+        not any(lines['forwards']) or
+        not any(lines['defense']) or
+        not lines['goalies']
+    )
+
+    if needs_fallback:
+        print(f"  Trying DailyFaceoff as fallback...")
+        df_lines = get_dailyfaceoff_lines(team_abbrev)
+        if df_lines:
+            if not any(lines['forwards']):
+                lines['forwards'] = df_lines.get('forwards', lines['forwards'])
+                print(f"  DailyFaceoff fallback: Got forwards")
+            if not any(lines['defense']):
+                lines['defense'] = df_lines.get('defense', lines['defense'])
+                print(f"  DailyFaceoff fallback: Got defense")
+            if not lines['goalies']:
+                lines['goalies'] = df_lines.get('goalies', lines['goalies'])
+                print(f"  DailyFaceoff fallback: Got goalies")
+            if not lines['injuries']:
+                lines['injuries'] = df_lines.get('injuries', lines['injuries'])
+                print(f"  DailyFaceoff fallback: Got injuries")
+        else:
+            print(f"  DailyFaceoff fallback: Failed (likely blocked)")
 
     return lines
 
