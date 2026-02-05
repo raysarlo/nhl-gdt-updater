@@ -143,12 +143,33 @@ def fetch_json(url):
 
 def fetch_html(url):
     """Fetch HTML content from a URL."""
+    import gzip
+    import zlib
     try:
         req = Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
         })
         with urlopen(req, timeout=15) as response:
-            return response.read().decode('utf-8')
+            data = response.read()
+            encoding = response.info().get('Content-Encoding')
+            if encoding == 'gzip':
+                data = gzip.decompress(data)
+            elif encoding == 'deflate':
+                try:
+                    data = zlib.decompress(data)
+                except zlib.error:
+                    data = zlib.decompress(data, -zlib.MAX_WBITS)
+            return data.decode('utf-8', errors='replace')
     except (URLError, HTTPError) as e:
         print(f"Error fetching {url}: {e}")
         return None
