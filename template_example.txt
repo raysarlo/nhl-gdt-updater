@@ -1,5 +1,5 @@
 <p style="text-align: center;">
-	img alt="BSBH Game Day Thread Logo" data-loaded="true" data-src="https://www.dropbox.com/s/rvdf4wif0cjlfbg/GDT_2022-23_head.png?raw=1" src="https://www.blueshirtsbrotherhood.com/applications/core/interface/js/spacer.png" style="height: auto;">
+	<img alt="254028fb-7b81-424e-af96-7708128ad068.jpeg" class="ipsImage ipsImage_thumbnailed" data-fileid="628" data-loaded="true" data-ratio="55.38" data-src="https://www.dropbox.com/s/rvdf4wif0cjlfbg/GDT_2022-23_head.png?raw=1" data-unique="88df03er2" src="https://www.blueshirtsbrotherhood.com/applications/core/interface/js/spacer.png" style="height: auto;" width="800">
 </p>
 
 
@@ -549,7 +549,7 @@
 	</h3>
 
 	<p>
-		 Peyton Krebs / Tage Thompson <strong>A</strong> / Josh Doan<br>
+		Peyton Krebs / Tage Thompson <strong>A</strong> / Josh Doan<br>
 		Jason Zucker / Josh Norris / Alex Tuch <strong>A</strong><br>
 		Zach Benson / Ryan McLeod / Jack Quinn<br>
 		Jordan Greenway / Noah Ostlund / Beck Malenstyn
