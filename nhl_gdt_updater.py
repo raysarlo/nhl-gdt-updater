@@ -9,6 +9,7 @@ Example: python nhl_gdt_updater.py "Sabres" --file "GDT Test.txt"
 """
 
 import argparse
+import html as html_module
 import json
 import re
 import sys
@@ -435,7 +436,7 @@ def get_lineupexperts_lines(team_abbrev):
             seen.add(s)
             unique_slugs.append(s)
 
-    player_names = [slug_to_name(s) for s in unique_slugs]
+    player_names = [html_module.escape(slug_to_name(s)) for s in unique_slugs]
 
     # First 12 players are forwards (4 lines of 3)
     for i, name in enumerate(player_names[:12]):
@@ -503,7 +504,7 @@ def get_rotowire_starting_goalie(team_abbrev):
         goalie_match = re.search(goalie_pattern, lineup, re.DOTALL)
 
         if goalie_match:
-            goalie_name = goalie_match.group(1).strip()
+            goalie_name = html_module.escape(goalie_match.group(1).strip())
 
             # Get confirmation status
             status = 'expected'
@@ -568,10 +569,11 @@ def get_espn_injuries(team_abbrev):
         if not name_match:
             continue
 
-        player_name = name_match.group(1).strip()
+        player_name = html_module.escape(name_match.group(1).strip())
 
-        # Skip if it looks like a team name
-        if player_name in ESPN_TEAM_NAMES.values():
+        # Skip if it looks like a team name (check unescaped value)
+        raw_name = name_match.group(1).strip()
+        if raw_name in ESPN_TEAM_NAMES.values():
             continue
 
         # Find status - ESPN uses TextStatus span
@@ -599,7 +601,7 @@ def get_espn_injuries(team_abbrev):
         # ESPN has col-desc for comments
         desc_match = re.search(r'col-desc[^>]*>([^<]*)</td>', row)
         if desc_match and desc_match.group(1).strip():
-            detail = desc_match.group(1).strip()
+            detail = html_module.escape(desc_match.group(1).strip())
         else:
             # Try finding injury type in any text
             detail_patterns = [
@@ -653,7 +655,7 @@ def get_dailyfaceoff_lines(team_abbrev):
             seen.add(slug_lower)
             unique_slugs.append(s)
 
-    player_names = [slug_to_name(s) for s in unique_slugs]
+    player_names = [html_module.escape(slug_to_name(s)) for s in unique_slugs]
 
     for i, name in enumerate(player_names[:12]):
         line_num = i // 3
@@ -691,7 +693,7 @@ def get_dailyfaceoff_lines(team_abbrev):
                     elif '>ir<' in nearby:
                         status = "IR"
 
-                name = slug_to_name(slug)
+                name = html_module.escape(slug_to_name(slug))
                 lines['injuries'].append({
                     'name': name,
                     'status': status,
@@ -902,7 +904,7 @@ def get_team_leaders(team_abbrev):
                 best_val = val
                 best = player
         if best:
-            name = f"{best.get('firstName', {}).get('default', '')} {best.get('lastName', {}).get('default', '')}".strip()
+            name = html_module.escape(f"{best.get('firstName', {}).get('default', '')} {best.get('lastName', {}).get('default', '')}".strip())
             if stat_key == 'plusMinus':
                 leaders[stat_key] = {'name': name, 'value': f"+{best_val}" if best_val > 0 else str(best_val)}
             else:
@@ -931,11 +933,11 @@ def get_team_leaders(team_abbrev):
                 best_f = player
 
     if best_d:
-        name = f"{best_d.get('firstName', {}).get('default', '')} {best_d.get('lastName', {}).get('default', '')}".strip()
+        name = html_module.escape(f"{best_d.get('firstName', {}).get('default', '')} {best_d.get('lastName', {}).get('default', '')}".strip())
         leaders['toi_d'] = {'name': name, 'value': seconds_to_time(best_d_toi)}
 
     if best_f:
-        name = f"{best_f.get('firstName', {}).get('default', '')} {best_f.get('lastName', {}).get('default', '')}".strip()
+        name = html_module.escape(f"{best_f.get('firstName', {}).get('default', '')} {best_f.get('lastName', {}).get('default', '')}".strip())
         leaders['toi_f'] = {'name': name, 'value': seconds_to_time(best_f_toi)}
 
     return leaders
@@ -973,7 +975,7 @@ def get_goalie_stats(team_abbrev, goalie_name=None):
         games_played = wins + losses + otl
 
         return {
-            'name': f"{selected.get('firstName', {}).get('default', '')} {selected.get('lastName', {}).get('default', '')}".strip(),
+            'name': html_module.escape(f"{selected.get('firstName', {}).get('default', '')} {selected.get('lastName', {}).get('default', '')}".strip()),
             'games_started': games_played,
             'record': f"{wins}-{losses}-{otl}",
             'sv_pct': f".{int(selected.get('savePercentage', 0) * 1000):03d}"[:4] if selected.get('savePercentage', 0) > 0 else ".000",

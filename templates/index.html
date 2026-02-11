@@ -312,6 +312,7 @@
             </div>
 
             <form id="gdtForm">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                 <div class="form-group">
                     <label for="opponent">Select Opponent:</label>
                     <select id="opponent" name="opponent" required>
@@ -356,7 +357,7 @@
             </div>
 
             <div id="previewContainer" style="display: none; margin-bottom: 20px;">
-                <div class="preview-frame" id="preview"></div>
+                <iframe id="preview" class="preview-frame" sandbox="" style="width: 100%; min-height: 600px; border: none; border-radius: 8px; background: white;"></iframe>
             </div>
 
             <div class="output-container">
@@ -422,7 +423,7 @@
 
                 // Show result
                 output.value = data.html;
-                preview.innerHTML = data.html;
+                preview.srcdoc = data.html;
                 opponentName.textContent = data.opponent;
                 result.style.display = 'block';
 
