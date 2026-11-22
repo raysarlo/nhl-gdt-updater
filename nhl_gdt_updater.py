@@ -54,6 +54,8 @@ FINISHED_STATES = {"OFF", "FINAL"}
 
 # How many recent games to look at when projecting a starting goalie
 GOALIE_LOOKBACK_GAMES = 5
+# Rebuilt lines keep the last game's units but rank them by time together over this many games
+LINE_RANK_GAMES = 3
 
 # ---------------------------------------------------------------------------
 # Team reference data
@@ -957,6 +959,31 @@ def build_lines_from_shifts(shifts, team_abbrev, forwards, defense, goalie_ids):
     }
 
 
+def unit_time_together(shifts, team_abbrev, groups):
+    """Seconds each group (list of playerIds) spent on the ice together, all situations."""
+    seconds = {}
+    wanted = {pid for g in groups for pid in g}
+    for row in shifts or []:
+        pid = row.get('playerId')
+        if pid not in wanted or row.get('teamAbbrev') != team_abbrev or row.get('typeCode') not in (517, None):
+            continue
+        start, end = parse_clock(row.get('startTime')), parse_clock(row.get('endTime'))
+        period = row.get('period', 1)
+        seconds.setdefault(pid, set()).update((period, sec) for sec in range(start, end))
+    return [len(set.intersection(*[seconds.get(pid, set()) for pid in g])) if g else 0 for g in groups]
+
+
+def rank_units_over_games(groups, last_game_toi, per_game_toi):
+    """Order groups by total time together across games; ties keep last game's order.
+
+    per_game_toi: list of [seconds per group] for each extra game.
+    Returns (ordered groups, ordered totals).
+    """
+    totals = [last + sum(game[i] for game in per_game_toi) for i, last in enumerate(last_game_toi)]
+    order = sorted(range(len(groups)), key=lambda i: (totals[i], last_game_toi[i]), reverse=True)
+    return [groups[i] for i in order], [totals[i] for i in order]
+
+
 def derive_lines_from_last_game(http, team_abbrev, schedule, club_stats, before_date=None):
     """Line combinations from the team's most recent completed game (NHL API only)."""
     recent = completed_games_before(schedule, before_date)
@@ -974,8 +1001,22 @@ def derive_lines_from_last_game(http, team_abbrev, schedule, club_stats, before_
     goalie_ids = [g['playerId'] for g in roster['goalies'] + other_goalies]
 
     lines = build_lines_from_shifts(shifts, team_abbrev, roster['forwards'], roster['defense'], goalie_ids)
-    log.info("  Rebuilt lines from %s; time together (min): F %s, D %s", game.get('gameDate'),
-             [round(t / 60, 1) for t in lines['forward_toi']], [round(t / 60, 1) for t in lines['defense_toi']])
+
+    # Rank the units by time together over the last few games, not just the last one,
+    # so one odd game (penalty-heavy, blowout, injury mid-game) doesn't reshuffle them.
+    extra_fwd, extra_def, games_used = [], [], [game.get('gameDate')]
+    for older in recent[1:LINE_RANK_GAMES]:
+        older_shifts = (http.get_json(f"{NHL_STATS_API}/shiftcharts?cayenneExp=gameId={older['id']}") or {}).get('data')
+        if not older_shifts:
+            continue
+        extra_fwd.append(unit_time_together(older_shifts, team_abbrev, lines['forwards']))
+        extra_def.append(unit_time_together(older_shifts, team_abbrev, lines['defense']))
+        games_used.append(older.get('gameDate'))
+    lines['forwards'], fwd_totals = rank_units_over_games(lines['forwards'], lines['forward_toi'], extra_fwd)
+    lines['defense'], def_totals = rank_units_over_games(lines['defense'], lines['defense_toi'], extra_def)
+    log.info("  Rebuilt lines from %s; ranked by time together over %s (min): F %s, D %s",
+             game.get('gameDate'), ", ".join(games_used),
+             [round(t / 60, 1) for t in fwd_totals], [round(t / 60, 1) for t in def_totals])
 
     full_names = {p.get('playerId'): player_full_name(p) for p in (club_stats or {}).get('skaters') or []}
 
@@ -988,6 +1029,7 @@ def derive_lines_from_last_game(http, team_abbrev, schedule, club_stats, before_
         'goalies': [],
         'injuries': [],
         'source_game': game.get('gameDate'),
+        'ranked_over': len(games_used),
     }
 
 
@@ -1130,7 +1172,9 @@ def get_line_combinations(http, team_abbrev, schedule, club_stats, game_date=Non
     derived = derive_lines_from_last_game(http, team_abbrev, schedule, club_stats, game_date)
     if derived and any(derived['forwards']):
         reason = "DailyFaceoff was unavailable" if not lineup else "DailyFaceoff's lines were incomplete"
-        add_note(notes, f"{team_name} lines are from their last game ({derived['source_game']}) "
+        ranked = (f", ranked by time together over the last {derived['ranked_over']} games"
+                  if derived.get('ranked_over', 1) > 1 else "")
+        add_note(notes, f"{team_name} lines are from their last game ({derived['source_game']}){ranked} "
                         f"because {reason}; double-check before posting")
         if lineup:  # keep DailyFaceoff's goalies/injuries even if its lines were partial
             derived['goalies'] = lineup.get('goalies', [])

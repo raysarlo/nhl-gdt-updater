@@ -183,7 +183,7 @@ The NHL and ESPN sources are JSON APIs with no bot protection. DailyFaceoff is b
 
 ## How lines and goalies are chosen
 
-**Lines.** DailyFaceoff's projected lines are used when available. Otherwise the tool downloads the NHL's shift chart for the team's most recent game and groups the players who spent the most 5-on-5 time together into four forward lines and three defense pairs. They are ranked by how long each unit was on the ice together in that game (all situations): the trio with the most shared ice time is the 1st line, and so on. Players currently on the injury list are left out.
+**Lines.** DailyFaceoff's projected lines are used when available. Otherwise the tool downloads the NHL's shift chart for the team's most recent game and groups the players who spent the most 5-on-5 time together into four forward lines and three defense pairs. They are ranked by how long each unit was on the ice together (all situations) over the last 3 games, so one unusual game doesn't reshuffle the order: the trio with the most shared ice time is the 1st line, and so on. Players currently on the injury list are left out.
 
 **Starting goalie.** If DailyFaceoff marks the starter as *Confirmed* or *Likely*, that goalie is used. On game day, RotoWire's *Confirmed* or *Expected* starter is used next. Otherwise the starter is projected with these rules:
 1. Only goalies who dressed for the team's most recent game are considered (that is the current tandem, so injured or reassigned goalies drop out), and anyone on the injury list is removed.
