@@ -29,6 +29,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Run tests
+        run: python -m unittest discover tests
+
       - name: Install PyInstaller
         run: pip install pyinstaller
 
@@ -59,11 +62,16 @@ jobs:
           name: NHL-GDT-Updater-Mac
           path: ./mac
 
+      - name: Rename assets to match README
+        run: |
+          mv ./windows/NHL-GDT-Updater.exe ./windows/NHL-GDT-Updater-Windows.exe
+          mv ./mac/NHL-GDT-Updater ./mac/NHL-GDT-Updater-Mac
+
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
-            ./windows/NHL-GDT-Updater.exe
-            ./mac/NHL-GDT-Updater
+            ./windows/NHL-GDT-Updater-Windows.exe
+            ./mac/NHL-GDT-Updater-Mac
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

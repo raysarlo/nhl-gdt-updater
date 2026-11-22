@@ -1,6 +1,6 @@
 # NHL Game Day Thread (GDT) Updater
 
-A Python tool that automatically updates NHL Game Day Thread templates with live data from the NHL API and DailyFaceoff. Designed for Rangers game day threads - automatically fetches data for both the Rangers and their opponent.
+A Python tool that automatically updates NHL Game Day Thread templates with live data from the NHL API, DailyFaceoff, and ESPN. Designed for Rangers game day threads - automatically fetches data for both the Rangers and their opponent.
 
 ## Downloads
 
@@ -57,7 +57,7 @@ chmod +x NHL-GDT-Updater-Mac
 ### Game Information (from NHL.com)
 - **Game Number**: Rangers' game number for the season
 - **Date & Time**: Game date and start time (Eastern)
-- **TV Broadcasts**: US broadcast networks for the game
+- **TV Broadcasts**: US national networks plus the Rangers' own regional feed (the opponent's local feed is skipped)
 - **Radio Stations**: Rangers radio coverage (98.7 FM, 107.1 FM, 710 AM, Sirius XM)
 - **GameCenter Link**: Direct link to NHL.com game page
 
@@ -69,14 +69,17 @@ chmod +x NHL-GDT-Updater-Mac
 - **Standings**: Record, points, division position, ROW, P%, home/away records, shootout record, L10, streak
 - **Team Stats**: Goal differential, GF/GP, GA/GP, PP%, PK% (all with league rankings)
 - **Team Leaders**: Goals, assists, points, +/-, PIM, TOI/G for defense & forwards
-- **Line Combinations**: Forward lines and defense pairings from DailyFaceoff
-- **Starting Goaltender**: Name and stats (GS, record, SV%, GAA, SO)
-- **Injuries**: Current injured/scratched players from DailyFaceoff
+- **Line Combinations**: Forward lines and defense pairings (see [How lines and goalies are chosen](#how-lines-and-goalies-are-chosen))
+- **Starting Goaltender**: Confirmed starter when available, otherwise a rule-based projection, plus stats (GS, record, SV%, GAA, SO)
+- **Injuries**: Current injured/suspended players with status and body area
+
+### Double-check notes
+When something had to be guessed or a source was unavailable (unconfirmed goalie, lines taken from the last game, a site blocking requests), the tool lists it at the end of the run, and the web app shows it in a yellow box above the output.
 
 ## Requirements
 
-- Python 3.6 or higher
-- No external dependencies (uses only Python standard library)
+- Python 3.7 or higher
+- No external dependencies for the command-line tool (uses only the Python standard library)
 
 ## Installation
 
@@ -116,7 +119,7 @@ All 32 NHL teams are supported via full name, city, nickname, or 3-letter abbrev
 |----------|-------|
 | Metropolitan | CAR, CBJ, NJD, NYI, NYR, PHI, PIT, WSH |
 | Atlantic | BOS, BUF, DET, FLA, MTL, OTT, TBL, TOR |
-| Central | CHI, COL, DAL, MIN, NSH, STL, UTA, WPG |
+| Central | CHI, COL, DAL, MIN, NSH, STL, UTA (Mammoth), WPG |
 | Pacific | ANA, CGY, EDM, LAK, SJS, SEA, VAN, VGK |
 
 ## Template Format
@@ -167,13 +170,42 @@ The template should have two team sections separated by `<hr>` tags:
 
 ## Data Sources
 
-| Data | Source |
-|------|--------|
-| Game Schedule & Broadcasts | [NHL API](https://api-web.nhle.com) |
-| Standings & Stats | [NHL API](https://api-web.nhle.com) |
-| PP% & PK% Rankings | [NHL Stats API](https://api.nhle.com/stats) |
-| Line Combinations | [DailyFaceoff](https://www.dailyfaceoff.com) |
-| Injuries | [DailyFaceoff](https://www.dailyfaceoff.com) |
+| Data | Primary source | Fallback |
+|------|----------------|----------|
+| Game Schedule & Broadcasts | [NHL API](https://api-web.nhle.com) (team season schedule) | — |
+| Standings, Stats, Leaders, Goalie Stats | [NHL API](https://api-web.nhle.com) | — |
+| PP% & PK% Rankings | [NHL Stats API](https://api.nhle.com/stats) | — |
+| Line Combinations | [DailyFaceoff](https://www.dailyfaceoff.com) (data embedded in the team page) | Rebuilt from NHL shift charts of the team's last game |
+| Starting Goalie | [DailyFaceoff starting goalies](https://www.dailyfaceoff.com/starting-goalies/) (Confirmed/Likely) | [RotoWire lineups](https://www.rotowire.com/hockey/nhl-lineups.php) (game-day only), then a rule-based projection from NHL box scores |
+| Injuries | [ESPN injuries API](https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries) | DailyFaceoff injured list |
+
+The NHL and ESPN sources are JSON APIs with no bot protection. DailyFaceoff is behind Cloudflare and blocks automated requests from cloud servers (the Render deployment gets HTTP 403); when it does, the fallbacks are used automatically and a note is shown. RotoWire has not been blocking, so on Render it is the main source for reported starters.
+
+## How lines and goalies are chosen
+
+**Lines.** DailyFaceoff's projected lines are used when available. Otherwise the tool downloads the NHL's shift chart for the team's most recent game and groups the players who spent the most 5-on-5 time together into four forward lines and three defense pairs, ordered by total ice time. Players currently on the injury list are left out.
+
+**Starting goalie.** If DailyFaceoff marks the starter as *Confirmed* or *Likely*, that goalie is used. On game day, RotoWire's *Confirmed* or *Expected* starter is used next. Otherwise the starter is projected with these rules:
+1. Only goalies who dressed for the team's most recent game are considered (that is the current tandem, so injured or reassigned goalies drop out), and anyone on the injury list is removed.
+2. On the second night of a back-to-back, the goalie who did **not** start the night before gets the start.
+3. Otherwise, whoever started the most of the last 5 games.
+4. Ties go to the goalie with more starts this season, then to whoever started the most recent game.
+
+If the projection disagrees with DailyFaceoff's unconfirmed pick, both names appear in the notes.
+
+## Development
+
+Run the offline test suite (no network needed; uses saved NHL data in `tests/fixtures`):
+
+```bash
+python -m unittest discover tests
+```
+
+Tests also run automatically on GitHub for every push. Run with `-v`/`--verbose` to see debug output from the updater.
+
+### Rebuilding the executables
+
+The `.exe` in `releases/` is built from the code at the time it was committed. After changing the code, push a version tag (for example `git tag v2.0.0 && git push --tags`) and the **Build Executables** workflow builds Windows and Mac executables and attaches them to a GitHub Release.
 
 ## License
 

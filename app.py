@@ -16,15 +16,15 @@ from nhl_gdt_updater import (
     get_team_abbrev,
     update_template,
     TEAM_FULL_NAMES,
-    TEAM_MAPPINGS,
 )
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
-# Rate limiting: 5 generates per minute per IP
+# Rate limiting: 60 requests per minute per IP overall, 5 generates per minute
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
@@ -104,8 +104,9 @@ def generate():
         # Use custom template if provided, otherwise load from file
         template = custom_template if custom_template else load_default_template()
 
-        # Generate the updated GDT
-        result = update_template(template, opponent_abbrev)
+        # Generate the updated GDT; notes collects things the user should double-check
+        notes = []
+        result = update_template(template, opponent_abbrev, notes=notes)
 
         if not result:
             return jsonify({'error': 'Failed to generate GDT. Check the logs for details.'}), 500
@@ -115,10 +116,11 @@ def generate():
         return jsonify({
             'success': True,
             'html': result,
-            'opponent': opponent_name
+            'opponent': opponent_name,
+            'notes': notes,
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("Error generating GDT")
         return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
 
