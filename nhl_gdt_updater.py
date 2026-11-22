@@ -1005,7 +1005,10 @@ def derive_lines_from_last_game(http, team_abbrev, schedule, club_stats, before_
     # Rank the units by time together over the last few games, not just the last one,
     # so one odd game (penalty-heavy, blowout, injury mid-game) doesn't reshuffle them.
     extra_fwd, extra_def, games_used = [], [], [game.get('gameDate')]
-    for older in recent[1:LINE_RANK_GAMES]:
+    # The NHL occasionally has no shift data for a game; look a couple of games further back
+    for older in recent[1:LINE_RANK_GAMES + 2]:
+        if len(games_used) >= LINE_RANK_GAMES:
+            break
         older_shifts = (http.get_json(f"{NHL_STATS_API}/shiftcharts?cayenneExp=gameId={older['id']}") or {}).get('data')
         if not older_shifts:
             continue
