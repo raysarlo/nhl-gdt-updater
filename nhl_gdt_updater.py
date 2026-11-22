@@ -876,9 +876,11 @@ def build_lines_from_shifts(shifts, team_abbrev, forwards, defense, goalie_ids):
     defense:    {playerId: 'D'} for the team's dressed defensemen
     goalie_ids: ids of every goalie in the game (both teams), excluded from skater counts
 
-    Players who spent the most 5-on-5 time together are grouped. Lines are ordered
-    by total ice time (first line = most used).
-    Returns {'forwards': [[ids] x<=4], 'defense': [[ids] x<=3]}.
+    Players who spent the most 5-on-5 time together are grouped. Groups are then
+    ranked by how long the whole unit was on the ice together (all situations):
+    the trio/pair with the most shared ice time is the 1st line/pair, and so on.
+    Returns {'forwards': [[ids] x<=4], 'defense': [[ids] x<=3],
+             'forward_toi': [seconds together per line], 'defense_toi': [...]}.
     """
     on_ice = {}  # period -> list of sets of (team, playerId), one per second
     for row in shifts or []:
@@ -899,11 +901,14 @@ def build_lines_from_shifts(shifts, team_abbrev, forwards, defense, goalie_ids):
     pair_time_5v5, pair_time_all = {}, {}
     toi_5v5, toi_all = {}, {}
 
-    for timeline in on_ice.values():
-        for players in timeline:
+    seconds_on_ice = {}  # playerId -> set of (period, second), all situations
+    for period, timeline in on_ice.items():
+        for second, players in enumerate(timeline):
             mine = [pid for team, pid in players if team == team_abbrev and pid in tracked]
             if not mine:
                 continue
+            for pid in mine:
+                seconds_on_ice.setdefault(pid, set()).add((period, second))
             skaters_mine = sum(1 for team, pid in players if team == team_abbrev and pid not in goalie_ids)
             skaters_theirs = sum(1 for team, pid in players if team != team_abbrev and pid not in goalie_ids)
             even = skaters_mine == 5 and skaters_theirs == 5
@@ -934,13 +939,22 @@ def build_lines_from_shifts(shifts, team_abbrev, forwards, defense, goalie_ids):
             remaining = [pid for pid in remaining if pid not in best]
         if len(groups) < count and remaining:
             groups.append(remaining[:size])
-        # Order by total ice time in all situations, the best proxy for the coach's depth chart
-        groups.sort(key=lambda g: sum(toi_all.get(pid, 0) for pid in g), reverse=True)
+        # Rank by time the whole unit was on the ice together (ties: combined ice time)
+        groups.sort(key=lambda g: (time_together(g), sum(toi_all.get(pid, 0) for pid in g)), reverse=True)
         return groups
 
-    forward_lines = [_order_line(g, forwards, ['L', 'C', 'R']) for g in greedy_groups(list(forwards), 3, 4)]
-    defense_pairs = greedy_groups(list(defense), 2, 3)
-    return {'forwards': forward_lines, 'defense': defense_pairs}
+    def time_together(group):
+        sets = [seconds_on_ice.get(pid, set()) for pid in group]
+        return len(set.intersection(*sets)) if sets else 0
+
+    forward_groups = greedy_groups(list(forwards), 3, 4)
+    defense_groups = greedy_groups(list(defense), 2, 3)
+    return {
+        'forwards': [_order_line(g, forwards, ['L', 'C', 'R']) for g in forward_groups],
+        'defense': defense_groups,
+        'forward_toi': [time_together(g) for g in forward_groups],
+        'defense_toi': [time_together(g) for g in defense_groups],
+    }
 
 
 def derive_lines_from_last_game(http, team_abbrev, schedule, club_stats, before_date=None):
@@ -960,6 +974,8 @@ def derive_lines_from_last_game(http, team_abbrev, schedule, club_stats, before_
     goalie_ids = [g['playerId'] for g in roster['goalies'] + other_goalies]
 
     lines = build_lines_from_shifts(shifts, team_abbrev, roster['forwards'], roster['defense'], goalie_ids)
+    log.info("  Rebuilt lines from %s; time together (min): F %s, D %s", game.get('gameDate'),
+             [round(t / 60, 1) for t in lines['forward_toi']], [round(t / 60, 1) for t in lines['defense_toi']])
 
     full_names = {p.get('playerId'): player_full_name(p) for p in (club_stats or {}).get('skaters') or []}
 

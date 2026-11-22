@@ -304,8 +304,13 @@ class LineTests(unittest.TestCase):
         # Centers are placed in the middle slot
         for line in lines["forwards"]:
             self.assertEqual(nyr["forwards"][line[1]], "C")
-        # Fourth line (least ice time) comes last
-        self.assertIn("M. Sasson", [nyr["names"][p] for p in lines["forwards"][-1]])
+        # Lines/pairs are ranked by time the whole unit was on the ice together
+        self.assertEqual(lines["forward_toi"], sorted(lines["forward_toi"], reverse=True))
+        self.assertEqual(lines["defense_toi"], sorted(lines["defense_toi"], reverse=True))
+        self.assertIn("M. Zibanejad", [nyr["names"][p] for p in lines["forwards"][0]])  # 13.7 min together
+        self.assertIn("N. Laba", [nyr["names"][p] for p in lines["forwards"][-1]])       # 7.8 min together
+        self.assertIn("S. Durzi", [nyr["names"][p] for p in lines["defense"][0]])        # 15.2 min together
+        self.assertEqual(round(lines["forward_toi"][0] / 60, 1), 13.7)
 
     def test_dailyfaceoff_lineup_parsing(self):
         lineup = gdt.parse_dailyfaceoff_lineup(gdt.extract_next_data(next_data_page(DFO_NYR_LINES)))
