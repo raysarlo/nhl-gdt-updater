@@ -47,6 +47,7 @@ NHL_API = "https://api-web.nhle.com/v1"
 NHL_STATS_API = "https://api.nhle.com/stats/rest/en"
 DAILYFACEOFF = "https://www.dailyfaceoff.com"
 ESPN_INJURIES_API = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries"
+ROTOWIRE_LINEUPS = "https://www.rotowire.com/hockey/nhl-lineups.php"
 
 # Game states from the NHL API that mean a game is over
 FINISHED_STATES = {"OFF", "FINAL"}
@@ -252,6 +253,15 @@ def parse_utc_offset(text):
         return timedelta(hours=-5)
     sign = -1 if match.group(1) == '-' else 1
     return sign * timedelta(hours=int(match.group(2)), minutes=int(match.group(3) or 0))
+
+
+def eastern_today():
+    """Today's date (YYYY-MM-DD) in US Eastern time."""
+    try:
+        from zoneinfo import ZoneInfo  # Python 3.9+
+        return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    except Exception:  # zoneinfo/tzdata unavailable: approximate with EST
+        return (datetime.utcnow() - timedelta(hours=5)).strftime("%Y-%m-%d")
 
 
 def add_note(notes, message):
@@ -739,6 +749,47 @@ def get_dailyfaceoff_starting_goalie(http, team_abbrev, game_date):
     return parse_dailyfaceoff_starting_goalie(extract_next_data(page), team_abbrev)
 
 
+# RotoWire sometimes uses 2-letter codes; try both forms.
+_ROTOWIRE_ABBREVS = {'TBL': 'TB', 'LAK': 'LA', 'SJS': 'SJ', 'NJD': 'NJ', 'VGK': 'VGK'}
+
+
+def parse_rotowire_starting_goalie(page_html, team_abbrev):
+    """Find the team's goalie on RotoWire's NHL lineups page (today's games only).
+
+    Returns {'name', 'status': 'Confirmed'|'Expected'} or None.
+    RotoWire isn't behind the bot protection that blocks DailyFaceoff from cloud
+    servers, so this is the main "reported starter" source on Render.
+    """
+    if not page_html:
+        return None
+    codes = {team_abbrev, _ROTOWIRE_ABBREVS.get(team_abbrev, team_abbrev)}
+    for box in re.split(r'<div class="lineup__box"', page_html)[1:]:
+        abbrevs = re.findall(r'lineup__abbr">\s*([A-Z]{2,4})\s*<', box)
+        code = next((c for c in abbrevs if c in codes), None)
+        if not code:
+            continue
+        # Visiting team is listed first; work out which side we are
+        team_pos = box.find(f'>{code}<')
+        before = box[:team_pos] if team_pos >= 0 else box
+        side = 'is-home' if before.rfind('is-home') > before.rfind('is-visit') else 'is-visit'
+        if team_pos < 0:
+            side = 'is-visit' if abbrevs.index(code) == 0 else 'is-home'
+        lineup = re.search(rf'lineup__list {side}">(.*?)(?:lineup__list|</div>\s*</div>\s*</div>)', box, re.DOTALL)
+        if not lineup:
+            continue
+        goalie = re.search(r'lineup__player-highlight-name[^>]*>.*?<a[^>]*>([^<]+)</a>',
+                           lineup.group(1), re.DOTALL)
+        if goalie:
+            name = html_module.unescape(goalie.group(1)).strip()
+            status = 'Confirmed' if 'is-confirmed' in lineup.group(1) else 'Expected'
+            return {'name': name, 'status': status}
+    return None
+
+
+def get_rotowire_starting_goalie(http, team_abbrev):
+    return parse_rotowire_starting_goalie(http.get_text(ROTOWIRE_LINEUPS), team_abbrev)
+
+
 # ---------------------------------------------------------------------------
 # Injuries (ESPN API)
 # ---------------------------------------------------------------------------
@@ -1000,7 +1051,11 @@ def project_starting_goalie(team_abbrev, recent_boxscores, game_date=None, injur
 
 
 def choose_starting_goalie(http, team_abbrev, game_info, schedule, club_stats, injuries, lineup, notes=None):
-    """Pick the starting goalie: confirmed > projected by rules > DailyFaceoff's unconfirmed pick."""
+    """Pick the starting goalie.
+
+    DailyFaceoff Confirmed/Likely > RotoWire (today's games) > rule-based projection >
+    DailyFaceoff's unconfirmed pick.
+    """
     team_name = TEAM_FULL_NAMES.get(team_abbrev, team_abbrev)
     game_date = (game_info or {}).get('eastern_date') or datetime.now().strftime("%Y-%m-%d")
 
@@ -1008,6 +1063,16 @@ def choose_starting_goalie(http, team_abbrev, game_info, schedule, club_stats, i
     if dfo and dfo['status'] in ('Confirmed', 'Likely', 'Expected'):
         log.info("  Starting goalie (DailyFaceoff, %s): %s", dfo['status'], dfo['name'])
         return dfo
+
+    # RotoWire's lineups page only covers today's games
+    if game_date == eastern_today():
+        rw = get_rotowire_starting_goalie(http, team_abbrev)
+        if rw:
+            log.info("  Starting goalie (RotoWire, %s): %s", rw['status'], rw['name'])
+            if rw['status'] != 'Confirmed':
+                add_note(notes, f"{team_name} starting goalie {rw['name']} is expected per RotoWire "
+                                f"but not confirmed yet")
+            return rw
 
     recent = completed_games_before(schedule, game_date)[:GOALIE_LOOKBACK_GAMES]
     boxscores = [b for b in (http.get_json(f"{NHL_API}/gamecenter/{g['id']}/boxscore") for g in recent) if b]

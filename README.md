@@ -176,16 +176,16 @@ The template should have two team sections separated by `<hr>` tags:
 | Standings, Stats, Leaders, Goalie Stats | [NHL API](https://api-web.nhle.com) | — |
 | PP% & PK% Rankings | [NHL Stats API](https://api.nhle.com/stats) | — |
 | Line Combinations | [DailyFaceoff](https://www.dailyfaceoff.com) (data embedded in the team page) | Rebuilt from NHL shift charts of the team's last game |
-| Starting Goalie | [DailyFaceoff starting goalies](https://www.dailyfaceoff.com/starting-goalies/) (Confirmed/Likely) | Rule-based projection from NHL box scores |
+| Starting Goalie | [DailyFaceoff starting goalies](https://www.dailyfaceoff.com/starting-goalies/) (Confirmed/Likely) | [RotoWire lineups](https://www.rotowire.com/hockey/nhl-lineups.php) (game-day only), then a rule-based projection from NHL box scores |
 | Injuries | [ESPN injuries API](https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries) | DailyFaceoff injured list |
 
-The NHL and ESPN sources are JSON APIs with no bot protection. DailyFaceoff is behind Cloudflare and may block automated requests (especially from cloud servers like Render); when it does, the fallbacks are used automatically and a note is shown.
+The NHL and ESPN sources are JSON APIs with no bot protection. DailyFaceoff is behind Cloudflare and blocks automated requests from cloud servers (the Render deployment gets HTTP 403); when it does, the fallbacks are used automatically and a note is shown. RotoWire has not been blocking, so on Render it is the main source for reported starters.
 
 ## How lines and goalies are chosen
 
 **Lines.** DailyFaceoff's projected lines are used when available. Otherwise the tool downloads the NHL's shift chart for the team's most recent game and groups the players who spent the most 5-on-5 time together into four forward lines and three defense pairs, ordered by total ice time. Players currently on the injury list are left out.
 
-**Starting goalie.** If DailyFaceoff marks the starter as *Confirmed* or *Likely*, that goalie is used. Otherwise the starter is projected with these rules:
+**Starting goalie.** If DailyFaceoff marks the starter as *Confirmed* or *Likely*, that goalie is used. On game day, RotoWire's *Confirmed* or *Expected* starter is used next. Otherwise the starter is projected with these rules:
 1. Only goalies who dressed for the team's most recent game are considered (that is the current tandem, so injured or reassigned goalies drop out), and anyone on the injury list is removed.
 2. On the second night of a back-to-back, the goalie who did **not** start the night before gets the start.
 3. Otherwise, whoever started the most of the last 5 games.

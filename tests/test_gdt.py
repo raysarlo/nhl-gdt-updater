@@ -507,6 +507,51 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("Joe Veleno /", nyr)
 
 
+class RotoWireTests(unittest.TestCase):
+    """RotoWire isn't bot-blocked from Render, so it's the main 'reported starter' source there."""
+
+    def page(self, home_status="is-confirmed"):
+        with open(os.path.join(FIXTURES, "rotowire_lineups.html")) as f:
+            return f.read().replace("HOME_STATUS", home_status)
+
+    def test_home_and_visiting_goalies(self):
+        page = self.page()
+        self.assertEqual(gdt.parse_rotowire_starting_goalie(page, "NYR"),
+                         {'name': 'Dylan Garand', 'status': 'Confirmed'})
+        self.assertEqual(gdt.parse_rotowire_starting_goalie(page, "CAR"),
+                         {'name': 'Brandon Bussi', 'status': 'Confirmed'})
+
+    def test_expected_status(self):
+        self.assertEqual(gdt.parse_rotowire_starting_goalie(self.page("is-expected"), "NYR")['status'], 'Expected')
+        self.assertEqual(gdt.parse_rotowire_starting_goalie(self.page(), "BUF"),
+                         {'name': 'Ukko-Pekka Luukkonen', 'status': 'Expected'})
+
+    def test_team_not_playing(self):
+        self.assertIsNone(gdt.parse_rotowire_starting_goalie(self.page(), "BOS"))
+        self.assertIsNone(gdt.parse_rotowire_starting_goalie(None, "NYR"))
+
+    def test_used_for_todays_game_when_dailyfaceoff_blocked(self):
+        http = FakeHttp(blocked={"www.dailyfaceoff.com"})
+        http.routes[gdt.ROTOWIRE_LINEUPS] = self.page("is-expected")
+        original = gdt.eastern_today
+        gdt.eastern_today = lambda: "2026-11-25"   # pretend the BUF game is today
+        try:
+            notes = []
+            html = gdt.update_template(read_template(), "BUF", notes=notes, http=http)
+        finally:
+            gdt.eastern_today = original
+        nyr, buf = team_sections(html)
+        self.assertIn("Dylan Garand", nyr)
+        self.assertIn("Ukko-Pekka Luukkonen", buf)  # RotoWire beats the back-to-back projection
+        self.assertTrue(any("expected per RotoWire" in n for n in notes), notes)
+
+    def test_not_used_for_future_games(self):
+        http = FakeHttp()
+        http.routes[gdt.ROTOWIRE_LINEUPS] = self.page()
+        gdt.update_template(read_template(), "BUF", http=http)  # game is 2026-11-25, not today
+        self.assertNotIn(gdt.ROTOWIRE_LINEUPS, http.requested)
+
+
 class TemplateRobustnessTests(unittest.TestCase):
     """Line/goalie/injury blocks must fill even when the template's markup drifts."""
 
