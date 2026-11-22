@@ -549,6 +549,39 @@ class MultiGameLineRankingTests(unittest.TestCase):
         self.assertTrue(any("ranked by time together over the last 2 games" in n for n in notes), notes)
 
 
+class MissingShiftDataTests(unittest.TestCase):
+    def test_skips_games_without_shift_data(self):
+        """A game with no shift chart is skipped and an older game is used instead."""
+        calls = []
+
+        class Http:
+            blocked_hosts = set()
+
+            def get_text(self, url, accept=None):
+                return None
+
+            def get_json(self, url):
+                calls.append(url)
+                if url.endswith("/boxscore"):
+                    return load_boxscore()
+                if "gameId=2026020373" in url:
+                    return {"data": load_shifts()}
+                if "gameId=2026020372" in url:
+                    return {"data": []}          # NHL has no shift data for this one
+                if "gameId=" in url:
+                    return {"data": load_shifts()}
+                return None
+
+        schedule = [{"id": 2026020360 + i, "gameDate": f"2026-11-{10 + i}", "gameState": "OFF", "gameType": 2}
+                    for i in range(14)]
+        lines = gdt.derive_lines_from_last_game(Http(), "NYR", schedule, {})
+        self.assertEqual(lines["ranked_over"], 3)
+        # 373 (last game) + 371 + 370; 372 had no data, so it looked one game further back...
+        self.assertTrue(any("gameId=2026020370" in u for u in calls))
+        # ...but no further than needed
+        self.assertFalse(any("gameId=2026020369" in u for u in calls))
+
+
 class RotoWireTests(unittest.TestCase):
     """RotoWire isn't bot-blocked from Render, so it's the main 'reported starter' source there."""
 
