@@ -6,78 +6,140 @@ Rangers are always the first team; the opponent is specified by the user.
 
 Usage: python nhl_gdt_updater.py <opponent_team> [--file <path_to_template>]
 Example: python nhl_gdt_updater.py "Sabres" --file "GDT Test.txt"
+
+Data sources (in priority order, each step falls back to the next):
+  Schedule, standings, stats, leaders, goalie stats ... NHL API (api-web.nhle.com)
+  PP% / PK% .......................................... NHL Stats API (api.nhle.com)
+  Line combinations ... DailyFaceoff page JSON  ->  derived from NHL shift charts
+                        of the team's most recent game
+  Starting goalie ..... DailyFaceoff "Confirmed"/"Likely"  ->  rule-based projection
+                        from NHL box scores  ->  DailyFaceoff unconfirmed pick
+  Injuries ............ ESPN injuries API  ->  DailyFaceoff injured list
+
+Only the Python standard library is used, so the script can be bundled into a
+single executable with PyInstaller.
 """
 
 import argparse
+import gzip
 import html as html_module
 import json
+import logging
+import os
 import re
 import sys
-from datetime import datetime, timedelta
-from urllib.request import urlopen, Request
-from urllib.error import URLError, HTTPError
+import time
+import unicodedata
+import zlib
+from datetime import date, datetime, timedelta
+from itertools import combinations, permutations
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-# NHL team mappings (name variations -> API abbreviation)
-TEAM_MAPPINGS = {
-    # Metropolitan Division
-    "carolina hurricanes": "CAR", "hurricanes": "CAR", "canes": "CAR",
-    "columbus blue jackets": "CBJ", "blue jackets": "CBJ", "jackets": "CBJ",
-    "new jersey devils": "NJD", "devils": "NJD",
-    "new york islanders": "NYI", "islanders": "NYI", "isles": "NYI",
-    "new york rangers": "NYR", "rangers": "NYR", "nyr": "NYR",
-    "philadelphia flyers": "PHI", "flyers": "PHI",
-    "pittsburgh penguins": "PIT", "penguins": "PIT", "pens": "PIT",
-    "washington capitals": "WSH", "capitals": "WSH", "caps": "WSH",
+log = logging.getLogger("gdt")
 
-    # Atlantic Division
-    "boston bruins": "BOS", "bruins": "BOS",
-    "buffalo sabres": "BUF", "sabres": "BUF",
-    "detroit red wings": "DET", "red wings": "DET", "wings": "DET",
-    "florida panthers": "FLA", "panthers": "FLA", "cats": "FLA",
-    "montreal canadiens": "MTL", "canadiens": "MTL", "habs": "MTL",
-    "ottawa senators": "OTT", "senators": "OTT", "sens": "OTT",
-    "tampa bay lightning": "TBL", "lightning": "TBL", "bolts": "TBL",
-    "toronto maple leafs": "TOR", "maple leafs": "TOR", "leafs": "TOR",
-
-    # Central Division
-    "arizona coyotes": "ARI", "coyotes": "ARI", "yotes": "ARI",
-    "chicago blackhawks": "CHI", "blackhawks": "CHI", "hawks": "CHI",
-    "colorado avalanche": "COL", "avalanche": "COL", "avs": "COL",
-    "dallas stars": "DAL", "stars": "DAL",
-    "minnesota wild": "MIN", "wild": "MIN",
-    "nashville predators": "NSH", "predators": "NSH", "preds": "NSH",
-    "st. louis blues": "STL", "st louis blues": "STL", "blues": "STL",
-    "winnipeg jets": "WPG", "jets": "WPG",
-    "utah hockey club": "UTA", "utah": "UTA",
-
-    # Pacific Division
-    "anaheim ducks": "ANA", "ducks": "ANA",
-    "calgary flames": "CGY", "flames": "CGY",
-    "edmonton oilers": "EDM", "oilers": "EDM", "oil": "EDM",
-    "los angeles kings": "LAK", "kings": "LAK",
-    "san jose sharks": "SJS", "sharks": "SJS",
-    "seattle kraken": "SEA", "kraken": "SEA",
-    "vancouver canucks": "VAN", "canucks": "VAN", "nucks": "VAN",
-    "vegas golden knights": "VGK", "golden knights": "VGK", "knights": "VGK",
-}
-
-# Full team names for display
-TEAM_FULL_NAMES = {
-    "ANA": "Anaheim Ducks", "ARI": "Arizona Coyotes", "BOS": "Boston Bruins",
-    "BUF": "Buffalo Sabres", "CGY": "Calgary Flames", "CAR": "Carolina Hurricanes",
-    "CHI": "Chicago Blackhawks", "COL": "Colorado Avalanche", "CBJ": "Columbus Blue Jackets",
-    "DAL": "Dallas Stars", "DET": "Detroit Red Wings", "EDM": "Edmonton Oilers",
-    "FLA": "Florida Panthers", "LAK": "Los Angeles Kings", "MIN": "Minnesota Wild",
-    "MTL": "Montreal Canadiens", "NSH": "Nashville Predators", "NJD": "New Jersey Devils",
-    "NYI": "New York Islanders", "NYR": "New York Rangers", "OTT": "Ottawa Senators",
-    "PHI": "Philadelphia Flyers", "PIT": "Pittsburgh Penguins", "SJS": "San Jose Sharks",
-    "SEA": "Seattle Kraken", "STL": "St. Louis Blues", "TBL": "Tampa Bay Lightning",
-    "TOR": "Toronto Maple Leafs", "UTA": "Utah Hockey Club", "VAN": "Vancouver Canucks",
-    "VGK": "Vegas Golden Knights", "WSH": "Washington Capitals", "WPG": "Winnipeg Jets",
-}
+NYR = "NYR"
 
 # Rangers radio stations (static - rarely changes)
 NYR_RADIO_STATIONS = "98.7 FM, 107.1 FM, 710 AM, Sirius XM"
+
+NHL_API = "https://api-web.nhle.com/v1"
+NHL_STATS_API = "https://api.nhle.com/stats/rest/en"
+DAILYFACEOFF = "https://www.dailyfaceoff.com"
+ESPN_INJURIES_API = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries"
+
+# Game states from the NHL API that mean a game is over
+FINISHED_STATES = {"OFF", "FINAL"}
+
+# How many recent games to look at when projecting a starting goalie
+GOALIE_LOOKBACK_GAMES = 5
+
+# ---------------------------------------------------------------------------
+# Team reference data
+# ---------------------------------------------------------------------------
+
+# abbreviation -> (full name, DailyFaceoff URL slug)
+TEAMS = {
+    "ANA": ("Anaheim Ducks", "anaheim-ducks"),
+    "BOS": ("Boston Bruins", "boston-bruins"),
+    "BUF": ("Buffalo Sabres", "buffalo-sabres"),
+    "CGY": ("Calgary Flames", "calgary-flames"),
+    "CAR": ("Carolina Hurricanes", "carolina-hurricanes"),
+    "CHI": ("Chicago Blackhawks", "chicago-blackhawks"),
+    "COL": ("Colorado Avalanche", "colorado-avalanche"),
+    "CBJ": ("Columbus Blue Jackets", "columbus-blue-jackets"),
+    "DAL": ("Dallas Stars", "dallas-stars"),
+    "DET": ("Detroit Red Wings", "detroit-red-wings"),
+    "EDM": ("Edmonton Oilers", "edmonton-oilers"),
+    "FLA": ("Florida Panthers", "florida-panthers"),
+    "LAK": ("Los Angeles Kings", "los-angeles-kings"),
+    "MIN": ("Minnesota Wild", "minnesota-wild"),
+    "MTL": ("Montreal Canadiens", "montreal-canadiens"),
+    "NSH": ("Nashville Predators", "nashville-predators"),
+    "NJD": ("New Jersey Devils", "new-jersey-devils"),
+    "NYI": ("New York Islanders", "new-york-islanders"),
+    "NYR": ("New York Rangers", "new-york-rangers"),
+    "OTT": ("Ottawa Senators", "ottawa-senators"),
+    "PHI": ("Philadelphia Flyers", "philadelphia-flyers"),
+    "PIT": ("Pittsburgh Penguins", "pittsburgh-penguins"),
+    "SJS": ("San Jose Sharks", "san-jose-sharks"),
+    "SEA": ("Seattle Kraken", "seattle-kraken"),
+    "STL": ("St. Louis Blues", "st-louis-blues"),
+    "TBL": ("Tampa Bay Lightning", "tampa-bay-lightning"),
+    "TOR": ("Toronto Maple Leafs", "toronto-maple-leafs"),
+    "UTA": ("Utah Mammoth", "utah-mammoth"),
+    "VAN": ("Vancouver Canucks", "vancouver-canucks"),
+    "VGK": ("Vegas Golden Knights", "vegas-golden-knights"),
+    "WSH": ("Washington Capitals", "washington-capitals"),
+    "WPG": ("Winnipeg Jets", "winnipeg-jets"),
+}
+
+TEAM_FULL_NAMES = {abbrev: info[0] for abbrev, info in TEAMS.items()}
+DAILYFACEOFF_SLUGS = {abbrev: info[1] for abbrev, info in TEAMS.items()}
+
+# Nicknames, cities and other aliases -> abbreviation.
+# Full names and abbreviations are added automatically below.
+_TEAM_ALIASES = {
+    "CAR": ["hurricanes", "canes", "carolina"],
+    "CBJ": ["blue jackets", "jackets", "columbus"],
+    "NJD": ["devils", "new jersey", "nj"],
+    "NYI": ["islanders", "isles"],
+    "NYR": ["rangers", "blueshirts"],
+    "PHI": ["flyers", "philadelphia", "philly"],
+    "PIT": ["penguins", "pens", "pittsburgh"],
+    "WSH": ["capitals", "caps", "washington"],
+    "BOS": ["bruins", "boston"],
+    "BUF": ["sabres", "buffalo"],
+    "DET": ["red wings", "wings", "detroit"],
+    "FLA": ["panthers", "cats", "florida"],
+    "MTL": ["canadiens", "habs", "montreal", "montréal canadiens", "montréal"],
+    "OTT": ["senators", "sens", "ottawa"],
+    "TBL": ["lightning", "bolts", "tampa bay", "tampa", "tb"],
+    "TOR": ["maple leafs", "leafs", "toronto"],
+    "CHI": ["blackhawks", "hawks", "chicago"],
+    "COL": ["avalanche", "avs", "colorado"],
+    "DAL": ["stars", "dallas"],
+    "MIN": ["wild", "minnesota"],
+    "NSH": ["predators", "preds", "nashville"],
+    "STL": ["blues", "st louis blues", "st. louis", "st louis"],
+    "UTA": ["mammoth", "utah", "utah hockey club", "utah hc"],
+    "WPG": ["jets", "winnipeg"],
+    "ANA": ["ducks", "anaheim"],
+    "CGY": ["flames", "calgary"],
+    "EDM": ["oilers", "oil", "edmonton"],
+    "LAK": ["kings", "los angeles", "la kings", "la"],
+    "SJS": ["sharks", "san jose", "sj"],
+    "SEA": ["kraken", "seattle"],
+    "VAN": ["canucks", "nucks", "vancouver"],
+    "VGK": ["golden knights", "knights", "vegas"],
+}
+
+TEAM_MAPPINGS = {}
+for _abbrev, (_name, _slug) in TEAMS.items():
+    TEAM_MAPPINGS[_name.lower()] = _abbrev
+    TEAM_MAPPINGS[_abbrev.lower()] = _abbrev
+    for _alias in _TEAM_ALIASES.get(_abbrev, []):
+        TEAM_MAPPINGS[_alias] = _abbrev
 
 # Team logo URLs (hosted on media.invisioncic.com)
 TEAM_LOGO_URLS = {
@@ -115,145 +177,35 @@ TEAM_LOGO_URLS = {
     "VGK": "//media.invisioncic.com/c316106/monthly_2021_09/gdt-logos-vgk.png.6e5a8a5dcfe130477f1ed83a60e445fd.png",
 }
 
-# DailyFaceoff URL slugs for each team
-DAILYFACEOFF_SLUGS = {
-    "ANA": "anaheim-ducks", "ARI": "arizona-coyotes", "BOS": "boston-bruins",
-    "BUF": "buffalo-sabres", "CGY": "calgary-flames", "CAR": "carolina-hurricanes",
-    "CHI": "chicago-blackhawks", "COL": "colorado-avalanche", "CBJ": "columbus-blue-jackets",
-    "DAL": "dallas-stars", "DET": "detroit-red-wings", "EDM": "edmonton-oilers",
-    "FLA": "florida-panthers", "LAK": "los-angeles-kings", "MIN": "minnesota-wild",
-    "MTL": "montreal-canadiens", "NSH": "nashville-predators", "NJD": "new-jersey-devils",
-    "NYI": "new-york-islanders", "NYR": "new-york-rangers", "OTT": "ottawa-senators",
-    "PHI": "philadelphia-flyers", "PIT": "pittsburgh-penguins", "SJS": "san-jose-sharks",
-    "SEA": "seattle-kraken", "STL": "st-louis-blues", "TBL": "tampa-bay-lightning",
-    "TOR": "toronto-maple-leafs", "UTA": "utah-hockey-club", "VAN": "vancouver-canucks",
-    "VGK": "vegas-golden-knights", "WSH": "washington-capitals", "WPG": "winnipeg-jets",
-}
 
-# LineupExperts URL slugs (Title-Case-With-Hyphens format)
-LINEUPEXPERTS_SLUGS = {
-    "ANA": "Anaheim-Ducks", "ARI": "Arizona-Coyotes", "BOS": "Boston-Bruins",
-    "BUF": "Buffalo-Sabres", "CGY": "Calgary-Flames", "CAR": "Carolina-Hurricanes",
-    "CHI": "Chicago-Blackhawks", "COL": "Colorado-Avalanche", "CBJ": "Columbus-Blue-Jackets",
-    "DAL": "Dallas-Stars", "DET": "Detroit-Red-Wings", "EDM": "Edmonton-Oilers",
-    "FLA": "Florida-Panthers", "LAK": "Los-Angeles-Kings", "MIN": "Minnesota-Wild",
-    "MTL": "Montreal-Canadiens", "NSH": "Nashville-Predators", "NJD": "New-Jersey-Devils",
-    "NYI": "New-York-Islanders", "NYR": "New-York-Rangers", "OTT": "Ottawa-Senators",
-    "PHI": "Philadelphia-Flyers", "PIT": "Pittsburgh-Penguins", "SJS": "San-Jose-Sharks",
-    "SEA": "Seattle-Kraken", "STL": "St-Louis-Blues", "TBL": "Tampa-Bay-Lightning",
-    "TOR": "Toronto-Maple-Leafs", "UTA": "Utah-Hockey-Club", "VAN": "Vancouver-Canucks",
-    "VGK": "Vegas-Golden-Knights", "WSH": "Washington-Capitals", "WPG": "Winnipeg-Jets",
-}
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
 
-# ESPN team names for matching in injuries page
-ESPN_TEAM_NAMES = {
-    "ANA": "Anaheim Ducks", "ARI": "Arizona Coyotes", "BOS": "Boston Bruins",
-    "BUF": "Buffalo Sabres", "CGY": "Calgary Flames", "CAR": "Carolina Hurricanes",
-    "CHI": "Chicago Blackhawks", "COL": "Colorado Avalanche", "CBJ": "Columbus Blue Jackets",
-    "DAL": "Dallas Stars", "DET": "Detroit Red Wings", "EDM": "Edmonton Oilers",
-    "FLA": "Florida Panthers", "LAK": "Los Angeles Kings", "MIN": "Minnesota Wild",
-    "MTL": "Montreal Canadiens", "NSH": "Nashville Predators", "NJD": "New Jersey Devils",
-    "NYI": "New York Islanders", "NYR": "New York Rangers", "OTT": "Ottawa Senators",
-    "PHI": "Philadelphia Flyers", "PIT": "Pittsburgh Penguins", "SJS": "San Jose Sharks",
-    "SEA": "Seattle Kraken", "STL": "St. Louis Blues", "TBL": "Tampa Bay Lightning",
-    "TOR": "Toronto Maple Leafs", "UTA": "Utah Hockey Club", "VAN": "Vancouver Canucks",
-    "VGK": "Vegas Golden Knights", "WSH": "Washington Capitals", "WPG": "Winnipeg Jets",
-}
+def normalize_name(name):
+    """Lower-case a name and strip accents/punctuation for loose matching.
 
-
-def fetch_json(url):
-    """Fetch JSON data from a URL."""
-    try:
-        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urlopen(req, timeout=15) as response:
-            return json.loads(response.read().decode('utf-8'))
-    except (URLError, HTTPError) as e:
-        print(f"Error fetching {url}: {e}")
-        return None
-
-
-def fetch_html(url):
-    """Fetch HTML content from a URL."""
-    import gzip
-    import zlib
-    import time
-    import random
-
-    # Multiple User-Agent options to rotate
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
-    ]
-
-    # Add a small random delay to seem more human-like
-    time.sleep(random.uniform(0.5, 1.5))
-
-    try:
-        req = Request(url, headers={
-            'User-Agent': random.choice(user_agents),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate',
-            'Referer': 'https://www.google.com/',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        })
-        with urlopen(req, timeout=15) as response:
-            data = response.read()
-            encoding = response.info().get('Content-Encoding')
-            if encoding == 'gzip':
-                data = gzip.decompress(data)
-            elif encoding == 'deflate':
-                try:
-                    data = zlib.decompress(data)
-                except zlib.error:
-                    data = zlib.decompress(data, -zlib.MAX_WBITS)
-            return data.decode('utf-8', errors='replace')
-    except (URLError, HTTPError) as e:
-        print(f"Error fetching {url}: {e}")
-        return None
-
-
-def slug_to_name(slug):
-    """Convert a URL slug to a proper name (e.g., 'connor-mcdavid' -> 'Connor McDavid')."""
-    words = slug.split("-")
-    result = []
-    i = 0
-
-    while i < len(words):
-        word = words[i]
-        word_lower = word.lower()
-
-        if len(word) == 1:
-            initials = [word.upper()]
-            while i + 1 < len(words) and len(words[i + 1]) == 1:
-                i += 1
-                initials.append(words[i].upper())
-            result.append(".".join(initials) + ".")
-        elif word_lower.startswith('mc') and len(word_lower) > 2:
-            result.append('Mc' + word[2:].capitalize())
-        elif word_lower.startswith('mac') and len(word_lower) > 3:
-            result.append('Mac' + word[3:].capitalize())
-        elif word_lower == "o" and i + 1 < len(words):
-            i += 1
-            result.append("O'" + words[i].capitalize())
-        else:
-            result.append(word.capitalize())
-        i += 1
-
-    return " ".join(result)
+    'Alexis Lafrenière' -> 'alexis lafreniere', 'Montréal Canadiens' -> 'montreal canadiens'
+    """
+    if not name:
+        return ""
+    text = unicodedata.normalize("NFKD", name)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9 ]", " ", text.lower())
+    return " ".join(text.split())
 
 
 def get_team_abbrev(team_input):
-    """Convert team name input to NHL API abbreviation."""
+    """Convert team name input to NHL API abbreviation (or None)."""
+    if not team_input:
+        return None
     normalized = team_input.lower().strip()
     if normalized in TEAM_MAPPINGS:
         return TEAM_MAPPINGS[normalized]
-    if normalized.upper() in TEAM_MAPPINGS.values():
-        return normalized.upper()
+    loose = normalize_name(team_input)
+    for alias, abbrev in TEAM_MAPPINGS.items():
+        if normalize_name(alias) == loose:
+            return abbrev
     return None
 
 
@@ -266,594 +218,329 @@ def ordinal(n):
     return f"{n}{suffix}"
 
 
+def format_three_decimals(value):
+    """Format a 0-1 fraction hockey-style: 0.9091 -> '.909', 1.0 -> '1.000'."""
+    text = f"{float(value or 0):.3f}"
+    return text[1:] if text.startswith("0") else text
+
+
 def format_streak(streak_code, streak_count):
     """Format streak for display (e.g., 'W3', 'L2', 'OT1')."""
     return f"{streak_code}{streak_count}"
 
 
-def find_next_game(team1_abbrev, team2_abbrev):
-    """Find the next scheduled game between two teams."""
-    print(f"Searching for next {team1_abbrev} vs {team2_abbrev} game...")
+def player_full_name(player):
+    """Full name from an NHL API player record with firstName/lastName dicts."""
+    first = (player.get('firstName') or {}).get('default', '')
+    last = (player.get('lastName') or {}).get('default', '')
+    return f"{first} {last}".strip()
 
-    # Get Rangers schedule for the next 30 days
-    today = datetime.now()
 
-    for days_ahead in range(60):  # Look up to 60 days ahead
-        check_date = today + timedelta(days=days_ahead)
-        date_str = check_date.strftime("%Y-%m-%d")
+def parse_clock(text):
+    """'MM:SS' -> seconds."""
+    try:
+        minutes, seconds = text.split(":")
+        return int(minutes) * 60 + int(seconds)
+    except (AttributeError, ValueError):
+        return 0
 
-        url = f"https://api-web.nhle.com/v1/schedule/{date_str}"
-        data = fetch_json(url)
 
-        if not data or 'gameWeek' not in data:
-            continue
+def parse_utc_offset(text):
+    """'-05:00' -> timedelta(hours=-5)."""
+    match = re.match(r'^([+-])(\d{1,2}):?(\d{2})?$', (text or "").strip())
+    if not match:
+        return timedelta(hours=-5)
+    sign = -1 if match.group(1) == '-' else 1
+    return sign * timedelta(hours=int(match.group(2)), minutes=int(match.group(3) or 0))
 
-        for day in data['gameWeek']:
-            for game in day.get('games', []):
-                away_abbrev = game.get('awayTeam', {}).get('abbrev')
-                home_abbrev = game.get('homeTeam', {}).get('abbrev')
 
-                # Check if this game involves both teams
-                teams_in_game = {away_abbrev, home_abbrev}
-                if team1_abbrev in teams_in_game and team2_abbrev in teams_in_game:
-                    return game
+def add_note(notes, message):
+    """Log a message the user should see and record it for the web UI."""
+    log.warning("NOTE: %s", message)
+    if notes is not None:
+        notes.append(message)
 
+
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
+
+# Only markers that appear on Cloudflare's interstitial pages. (Normal pages served
+# through Cloudflare can include a "challenge-platform" script, so that isn't one.)
+_CHALLENGE_MARKERS = (
+    "<title>just a moment",
+    "_cf_chl_opt",
+    "cf-chl-",
+    "attention required! | cloudflare",
+    "enable javascript and cookies to continue",
+)
+
+
+def looks_like_bot_challenge(body):
+    """True if an HTML body is a Cloudflare-style bot challenge page."""
+    if not body:
+        return False
+    head = body[:5000].lower()
+    return any(marker in head for marker in _CHALLENGE_MARKERS)
+
+
+class HttpClient:
+    """Tiny urllib wrapper with a per-run cache, retries, and bot-wall detection.
+
+    A new client is created for every GDT generation so data is always fresh,
+    but the same URL is never downloaded twice within one run.
+    """
+
+    USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
+
+    def __init__(self, timeout=10, retries=1):
+        self.timeout = timeout
+        self.retries = retries
+        self._cache = {}
+        self.blocked_hosts = set()
+        self._dead_hosts = set()  # unreachable this run; don't keep waiting on them
+
+    @staticmethod
+    def _host(url):
+        return re.sub(r'^https?://([^/]+).*$', r'\1', url)
+
+    def get_text(self, url, accept="text/html,application/xhtml+xml,*/*;q=0.8"):
+        if url in self._cache:
+            return self._cache[url]
+        host = self._host(url)
+        if host in self.blocked_hosts or host in self._dead_hosts:
+            return None
+
+        text = None
+        for attempt in range(self.retries + 1):
+            try:
+                req = Request(url, headers={
+                    'User-Agent': self.USER_AGENT,
+                    'Accept': accept,
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate',
+                })
+                with urlopen(req, timeout=self.timeout) as response:
+                    text = self._decode(response.read(), response.info().get('Content-Encoding'))
+                if looks_like_bot_challenge(text):
+                    self._report_blocked(url, "challenge page")
+                    text = None
+                break
+            except HTTPError as e:
+                body = ""
+                try:
+                    body = self._decode(e.read(), e.headers.get('Content-Encoding') if e.headers else None)
+                except Exception:
+                    pass
+                if looks_like_bot_challenge(body) or (e.code in (403, 429) and 'cloudflare' in body.lower()):
+                    self._report_blocked(url, f"HTTP {e.code}")
+                    break
+                if e.code >= 500 or e.code == 429:
+                    log.debug("HTTP %s for %s (attempt %d)", e.code, url, attempt + 1)
+                else:
+                    log.warning("HTTP %s fetching %s", e.code, url)
+                    break
+            except (URLError, OSError) as e:  # includes timeouts and connection resets
+                log.debug("Network error for %s (attempt %d): %s", url, attempt + 1, e)
+                if attempt == self.retries:
+                    log.warning("Could not reach %s: %s", host, e)
+                    self._dead_hosts.add(host)
+            if attempt < self.retries:
+                time.sleep(1.0 * (attempt + 1))
+
+        self._cache[url] = text
+        return text
+
+    def get_json(self, url):
+        cache_key = ("json", url)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        text = self.get_text(url, accept="application/json")
+        data = None
+        if text:
+            try:
+                data = json.loads(text)
+            except ValueError:
+                log.warning("Invalid JSON from %s", url)
+        self._cache[cache_key] = data
+        return data
+
+    def _report_blocked(self, url, reason):
+        host = self._host(url)
+        self.blocked_hosts.add(host)
+        log.warning("%s blocked the request (bot protection, %s)", host, reason)
+
+    @staticmethod
+    def _decode(data, encoding):
+        if encoding == 'gzip':
+            data = gzip.decompress(data)
+        elif encoding == 'deflate':
+            try:
+                data = zlib.decompress(data)
+            except zlib.error:
+                data = zlib.decompress(data, -zlib.MAX_WBITS)
+        return data.decode('utf-8', errors='replace')
+
+
+# ---------------------------------------------------------------------------
+# Schedule / game info
+# ---------------------------------------------------------------------------
+
+def get_season_schedule(http, team_abbrev):
+    """All games (preseason, regular season, playoffs) for a team's current season."""
+    data = http.get_json(f"{NHL_API}/club-schedule-season/{team_abbrev}/now")
+    games = (data or {}).get('games') or []
+    return sorted(games, key=lambda g: g.get('startTimeUTC') or '')
+
+
+def _game_teams(game):
+    return (game.get('awayTeam', {}).get('abbrev'), game.get('homeTeam', {}).get('abbrev'))
+
+
+def find_next_game(schedule, opponent_abbrev):
+    """First game against the opponent that hasn't finished yet."""
+    for game in schedule:
+        if opponent_abbrev in _game_teams(game) and game.get('gameState') not in FINISHED_STATES:
+            return game
     return None
 
 
-def get_game_info(game_data):
-    """Extract game information from NHL API game data."""
+def get_game_number(schedule, game):
+    """1-based game number of `game` among the team's games of the same type."""
+    if not game:
+        return None
+    count = 0
+    for g in schedule:
+        if g.get('gameType') == game.get('gameType'):
+            count += 1
+            if g.get('id') == game.get('id'):
+                return count
+    return None
+
+
+def completed_games_before(schedule, game_date=None):
+    """Finished games, most recent first, optionally only those before game_date."""
+    games = [g for g in schedule if g.get('gameState') in FINISHED_STATES]
+    if game_date:
+        games = [g for g in games if (g.get('gameDate') or '') < game_date]
+    return list(reversed(games))
+
+
+def select_broadcasts(broadcasts, team_is_home):
+    """US TV networks a fan of the team can watch: national + the team's own regional.
+
+    The NHL API tags each broadcast with a market: N (national), H (home team's
+    regional) or A (away team's regional). The other team's regional feed is skipped.
+    """
+    team_market = 'H' if team_is_home else 'A'
+    us = [b for b in broadcasts or [] if b.get('countryCode') == 'US' and b.get('network')]
+    chosen = [b for b in us if b.get('market') in ('N', team_market)]
+    if not chosen:
+        chosen = us
+    networks = []
+    for b in chosen:
+        if b['network'] not in networks:
+            networks.append(b['network'])
+    return networks
+
+
+def get_game_info(game_data, team_abbrev=NYR):
+    """Extract display-ready game information from an NHL API schedule entry."""
     if not game_data:
         return None
 
-    game_id = game_data.get('id')
-    start_time_utc = game_data.get('startTimeUTC')  # ISO format
-
-    # Parse date and time from startTimeUTC
-    game_date = None
     formatted_date = ""
-    formatted_time = ""
+    formatted_time = "TBD"
+    eastern_date = game_data.get('gameDate')
 
+    start_time_utc = game_data.get('startTimeUTC')
     if start_time_utc:
         try:
-            # Parse UTC time
-            utc_time = datetime.fromisoformat(start_time_utc.replace('Z', '+00:00'))
-            # Convert to Eastern (UTC-5 for EST, UTC-4 for EDT)
-            # Use the offset provided by the API if available
-            eastern_offset = game_data.get('easternUTCOffset', '-05:00')
-            offset_hours = int(eastern_offset.split(':')[0])
-            eastern_time = utc_time.replace(tzinfo=None) + timedelta(hours=offset_hours)
+            utc_time = datetime.fromisoformat(start_time_utc.replace('Z', '+00:00')).replace(tzinfo=None)
+            eastern = utc_time + parse_utc_offset(game_data.get('easternUTCOffset', '-05:00'))
+            formatted_date = f"{eastern.month}/{eastern.day}/{eastern.strftime('%y')}"
+            hour12 = eastern.hour % 12 or 12
+            am_pm = "AM" if eastern.hour < 12 else "PM"
+            formatted_time = f"{hour12}:{eastern.minute:02d} {am_pm}"
+            eastern_date = eastern.strftime("%Y-%m-%d")
+        except (ValueError, AttributeError):
+            pass
 
-            # Format date
-            game_date = eastern_time.replace(hour=0, minute=0, second=0, microsecond=0)
-            formatted_date = f"{eastern_time.month}/{eastern_time.day}/{eastern_time.strftime('%y')}"
-
-            # Format time
-            hour = eastern_time.hour
-            minute = eastern_time.minute
-            am_pm = "AM" if hour < 12 else "PM"
-            if hour > 12:
-                hour -= 12
-            elif hour == 0:
-                hour = 12
-            formatted_time = f"{hour}:{minute:02d} {am_pm}"
-        except (ValueError, AttributeError) as e:
-            formatted_time = "TBD"
-            formatted_date = ""
-
-    # Get broadcasts
-    tv_broadcasts = []
-
-    broadcasts = game_data.get('tvBroadcasts', [])
-    for broadcast in broadcasts:
-        network = broadcast.get('network', '')
-        country = broadcast.get('countryCode', '')
-
-        # Only include US broadcasts
-        if country == 'US' and network:
-            tv_broadcasts.append(network)
-
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_tv = []
-    for net in tv_broadcasts:
-        if net not in seen:
-            seen.add(net)
-            unique_tv.append(net)
-
-    # Use gameCenterLink from API if available, otherwise construct it
+    away, home = _game_teams(game_data)
     gamecenter_url = game_data.get('gameCenterLink', '')
     if gamecenter_url and not gamecenter_url.startswith('http'):
         gamecenter_url = f"https://www.nhl.com{gamecenter_url}"
 
     return {
-        'game_id': game_id,
+        'game_id': game_data.get('id'),
+        'game_type': game_data.get('gameType', 2),
         'date': formatted_date,
-        'date_obj': game_date,
+        'eastern_date': eastern_date,          # YYYY-MM-DD
         'time': formatted_time,
-        'tv_broadcasts': unique_tv,
+        'tv_broadcasts': select_broadcasts(game_data.get('tvBroadcasts'), team_is_home=(home == team_abbrev)),
         'gamecenter_url': gamecenter_url,
-        'away_team': game_data.get('awayTeam', {}).get('abbrev'),
-        'home_team': game_data.get('homeTeam', {}).get('abbrev'),
+        'away_team': away,
+        'home_team': home,
     }
 
 
-def get_team_game_number(team_abbrev, game_date):
-    """Calculate the team's game number for the season based on their record.
+# ---------------------------------------------------------------------------
+# Standings, team stats, leaders
+# ---------------------------------------------------------------------------
 
-    Game number = wins + losses + OTL + 1 (for the upcoming game)
-    """
-    if not game_date:
-        return None
+def get_standings(http):
+    data = http.get_json(f"{NHL_API}/standings/now")
+    return (data or {}).get('standings') or []
 
-    # Get team standings to get their record
-    url = "https://api-web.nhle.com/v1/standings/now"
-    standings = fetch_json(url)
 
-    if not standings:
-        return None
-
-    all_teams = standings.get('standings', [])
-    for team in all_teams:
+def find_team_standing(standings, team_abbrev):
+    for team in standings:
         if team.get('teamAbbrev', {}).get('default') == team_abbrev:
-            wins = team.get('wins', 0)
-            losses = team.get('losses', 0)
-            otl = team.get('otLosses', 0)
-            # Game number is total games played + 1
-            return wins + losses + otl + 1
-
+            return team
     return None
 
 
-def get_lineupexperts_lines(team_abbrev):
-    """Fetch forward lines and defense pairs from LineupExperts."""
-    slug = LINEUPEXPERTS_SLUGS.get(team_abbrev)
-    if not slug:
-        print(f"  No LineupExperts slug found for {team_abbrev}")
-        return None
+def get_club_stats(http, team_abbrev):
+    return http.get_json(f"{NHL_API}/club-stats/{team_abbrev}/now") or {}
 
-    url = f"https://www.lineupexperts.com/hockey/line-combinations/{slug}"
-    html = fetch_html(url)
 
-    if not html:
-        return None
-
-    lines = {
-        'forwards': [[], [], [], []],
-        'defense': [[], [], []]
-    }
-
-    # Extract player names from href="/hockey/player-pop/{slug}" links
-    # Players appear in order: forwards (4 lines x 3), then defense (3 pairs x 2)
-    player_pattern = r'href="/hockey/player-pop/([a-z0-9.-]+)"'
-    player_slugs = re.findall(player_pattern, html.lower())
-
-    # Deduplicate while preserving order (players may appear multiple times)
-    seen = set()
-    unique_slugs = []
-    for s in player_slugs:
-        if s not in seen:
-            seen.add(s)
-            unique_slugs.append(s)
-
-    player_names = [html_module.escape(slug_to_name(s)) for s in unique_slugs]
-
-    # First 12 players are forwards (4 lines of 3)
-    for i, name in enumerate(player_names[:12]):
-        line_num = i // 3
-        if line_num < 4:
-            lines['forwards'][line_num].append(name)
-
-    # Next 6 players are defensemen (3 pairs of 2)
-    for i, name in enumerate(player_names[12:18]):
-        pair_num = i // 2
-        if pair_num < 3:
-            lines['defense'][pair_num].append(name)
-
-    return lines
-
-
-def get_rotowire_starting_goalie(team_abbrev):
-    """Fetch starting goalie from RotoWire NHL Lineups page."""
-    url = "https://www.rotowire.com/hockey/nhl-lineups.php"
-    html = fetch_html(url)
-
-    if not html:
-        return None
-
-    # RotoWire page has multiple game boxes, each with visit and home lineups
-    # Split by game boxes and find the one containing our team
-    games = re.split(r'<div class="lineup__box"', html)
-
-    for game in games:
-        # Check if this game contains our team
-        if f'>{team_abbrev}<' not in game:
-            continue
-
-        # Find all team abbreviations in this game
-        abbrevs = re.findall(r'lineup__abbr">([A-Z]{2,4})</div>', game)
-        if team_abbrev not in abbrevs:
-            continue
-
-        # Determine if our team is home or visitor
-        # The structure is: visit team section, then home team section
-        # lineup__team with is-visit or is-home before lineup__abbr
-        team_pos = game.find(f'>{team_abbrev}<')
-
-        # Check what comes before - is-home or is-visit
-        before_team = game[:team_pos]
-        last_is_home = before_team.rfind('is-home')
-        last_is_visit = before_team.rfind('is-visit')
-
-        if last_is_home > last_is_visit:
-            lineup_type = 'is-home'
-        else:
-            lineup_type = 'is-visit'
-
-        # Find the lineup list for our team's position
-        lineup_pattern = rf'lineup__list {lineup_type}">(.*?)(?:lineup__list|</div>\s*</div>\s*</div>)'
-        lineup_match = re.search(lineup_pattern, game, re.DOTALL)
-
-        if not lineup_match:
-            continue
-
-        lineup = lineup_match.group(1)
-
-        # Extract goalie from lineup__player-highlight-name
-        goalie_pattern = r'lineup__player-highlight-name[^>]*>.*?<a[^>]*>([^<]+)</a>'
-        goalie_match = re.search(goalie_pattern, lineup, re.DOTALL)
-
-        if goalie_match:
-            goalie_name = html_module.escape(goalie_match.group(1).strip())
-
-            # Get confirmation status
-            status = 'expected'
-            if 'is-confirmed' in lineup:
-                status = 'confirmed'
-
-            return {'name': goalie_name, 'status': status}
-
-    return None
-
-
-def get_espn_injuries(team_abbrev):
-    """Fetch injuries from ESPN with status (IR, DTD, Out, etc.)."""
-    url = "https://www.espn.com/nhl/injuries"
-    html = fetch_html(url)
-
-    if not html:
-        return []
-
-    injuries = []
-    team_name = ESPN_TEAM_NAMES.get(team_abbrev)
-    if not team_name:
-        print(f"  No ESPN team name found for {team_abbrev}")
-        return []
-
-    # ESPN structure: <span class="injuries__teamName ml2">Team Name</span>
-    # followed by tbody with injury rows
-    team_marker = f'injuries__teamName[^>]*>{team_name}<'
-    team_match = re.search(team_marker, html)
-
-    if not team_match:
-        # Try case-insensitive search
-        team_marker = f'injuries__teamName[^>]*>{re.escape(team_name)}<'
-        team_match = re.search(team_marker, html, re.IGNORECASE)
-
-    if not team_match:
-        return []
-
-    team_start = team_match.end()
-
-    # Find the tbody after this team name
-    tbody_start = html.find('<tbody', team_start)
-    if tbody_start == -1:
-        return []
-
-    tbody_end = html.find('</tbody>', tbody_start)
-    if tbody_end == -1:
-        return []
-
-    team_section = html[tbody_start:tbody_end]
-
-    # Find all table rows
-    rows = re.findall(r'<tr[^>]*>(.*?)</tr>', team_section, re.DOTALL | re.IGNORECASE)
-
-    for row in rows:
-        # Skip header rows
-        if '<th' in row.lower():
-            continue
-
-        # Extract player name from link
-        name_match = re.search(r'href="[^"]*player[^"]*"[^>]*>([^<]+)</a>', row)
-        if not name_match:
-            continue
-
-        player_name = html_module.escape(name_match.group(1).strip())
-
-        # Skip if it looks like a team name (check unescaped value)
-        raw_name = name_match.group(1).strip()
-        if raw_name in ESPN_TEAM_NAMES.values():
-            continue
-
-        # Find status - ESPN uses TextStatus span
-        status = "IR"  # Default
-        status_match = re.search(r'TextStatus[^>]*>([^<]+)</span>', row)
-        if status_match:
-            status_text = status_match.group(1).strip().lower()
-            if 'day-to-day' in status_text:
-                status = "DTD"
-            elif 'out' in status_text:
-                status = "OUT"
-            elif 'suspension' in status_text:
-                status = "SUSP"
-            elif 'injured reserve' in status_text:
-                status = "IR"
-            elif 'questionable' in status_text:
-                status = "Q"
-            elif 'doubtful' in status_text:
-                status = "D"
-            elif 'probable' in status_text:
-                status = "P"
-
-        # Try to find injury detail from comment column
-        detail = "Undisclosed"
-        # ESPN has col-desc for comments
-        desc_match = re.search(r'col-desc[^>]*>([^<]*)</td>', row)
-        if desc_match and desc_match.group(1).strip():
-            detail = html_module.escape(desc_match.group(1).strip())
-        else:
-            # Try finding injury type in any text
-            detail_patterns = [
-                r'(?:lower|upper)\s*body',
-                r'(?:head|knee|ankle|shoulder|back|hip|wrist|hand|groin|leg|arm|foot|neck|concussion|illness|personal)',
-            ]
-            for pattern in detail_patterns:
-                detail_match = re.search(pattern, row, re.IGNORECASE)
-                if detail_match:
-                    detail = detail_match.group(0).title()
-                    break
-
-        injuries.append({
-            'name': player_name,
-            'status': status,
-            'detail': detail
-        })
-
-    return injuries
-
-
-def get_dailyfaceoff_lines(team_abbrev):
-    """Fetch line combinations from DailyFaceoff (fallback source)."""
-    slug = DAILYFACEOFF_SLUGS.get(team_abbrev)
-    if not slug:
-        print(f"No DailyFaceoff slug found for {team_abbrev}")
-        return None
-
-    url = f"https://www.dailyfaceoff.com/teams/{slug}/line-combinations/"
-    html = fetch_html(url)
-
-    if not html:
-        return None
-
-    lines = {
-        'forwards': [[], [], [], []],
-        'defense': [[], [], []],
-        'goalies': [],
-        'injuries': []
-    }
-
-    injuries_marker = html.find('>Injuries<')
-    roster_html = html[:injuries_marker] if injuries_marker > 0 else html
-    player_slugs = re.findall(r'href="/players/news/([a-zA-Z0-9-]+)/\d+"', roster_html)
-
-    seen = set()
-    unique_slugs = []
-    for s in player_slugs:
-        slug_lower = s.lower()
-        if slug_lower not in seen:
-            seen.add(slug_lower)
-            unique_slugs.append(s)
-
-    player_names = [html_module.escape(slug_to_name(s)) for s in unique_slugs]
-
-    for i, name in enumerate(player_names[:12]):
-        line_num = i // 3
-        if line_num < 4:
-            lines['forwards'][line_num].append(name)
-
-    for i, name in enumerate(player_names[12:18]):
-        pair_num = i // 2
-        if pair_num < 3:
-            lines['defense'][pair_num].append(name)
-
-    lines['goalies'] = player_names[18:20] if len(player_names) > 18 else []
-
-    # Extract injuries
-    injuries_start = html.find('>Injuries<')
-    if injuries_start > 0:
-        injuries_section = html[injuries_start:injuries_start+10000]
-        injury_slugs = re.findall(r'href="/players/news/([a-zA-Z0-9-]+)/\d+"', injuries_section)
-
-        seen_injured = set()
-        for slug in injury_slugs:
-            slug_lower = slug.lower()
-            if slug_lower not in seen_injured and slug_lower not in seen:
-                seen_injured.add(slug_lower)
-                player_idx = injuries_section.lower().find(slug_lower)
-                if player_idx > 0:
-                    nearby = injuries_section[player_idx:player_idx+500].lower()
-                    status = "IR"
-                    if '>out<' in nearby or '>out ' in nearby:
-                        status = "OUT"
-                    elif '>dtd<' in nearby or 'day-to-day' in nearby:
-                        status = "DTD"
-                    elif '>ltir<' in nearby:
-                        status = "LTIR"
-                    elif '>ir<' in nearby:
-                        status = "IR"
-
-                name = html_module.escape(slug_to_name(slug))
-                lines['injuries'].append({
-                    'name': name,
-                    'status': status,
-                    'detail': "Undisclosed"
-                })
-
-    return lines
-
-
-def get_line_combinations(team_abbrev):
-    """
-    Fetch line combinations from multiple sources.
-
-    Priority:
-    1. LineupExperts for forwards/defense
-    2. RotoWire for starting goalie
-    3. ESPN for injuries (with status: IR, DTD, Out, Suspension)
-    4. DailyFaceoff as fallback if primary sources fail
-    """
-    lines = {
-        'forwards': [[], [], [], []],
-        'defense': [[], [], []],
-        'goalies': [],
-        'injuries': []
-    }
-
-    # 1. Get forwards and defense from LineupExperts
-    print(f"  Fetching line combinations from LineupExperts...")
-    le_lines = get_lineupexperts_lines(team_abbrev)
-    if le_lines:
-        lines['forwards'] = le_lines.get('forwards', lines['forwards'])
-        lines['defense'] = le_lines.get('defense', lines['defense'])
-        fwd_count = sum(len(l) for l in lines['forwards'])
-        def_count = sum(len(p) for p in lines['defense'])
-        print(f"  LineupExperts: Got {fwd_count} forwards, {def_count} defensemen")
-    else:
-        print(f"  LineupExperts: Failed to fetch")
-
-    # 2. Get starting goalie from RotoWire
-    print(f"  Fetching starting goalie from RotoWire...")
-    rw_goalie = get_rotowire_starting_goalie(team_abbrev)
-    if rw_goalie:
-        lines['goalies'] = [rw_goalie['name']]
-        status_str = f" ({rw_goalie['status']})" if rw_goalie.get('status') else ""
-        print(f"  RotoWire: Starting goalie = {rw_goalie['name']}{status_str}")
-    else:
-        print(f"  RotoWire: No starting goalie found (team may not play today)")
-
-    # 3. Get injuries from ESPN
-    print(f"  Fetching injuries from ESPN...")
-    espn_injuries = get_espn_injuries(team_abbrev)
-    if espn_injuries:
-        lines['injuries'] = espn_injuries
-        print(f"  ESPN: Got {len(espn_injuries)} injuries")
-    else:
-        print(f"  ESPN: No injuries found or failed to fetch")
-
-    # 4. Fallback to DailyFaceoff if primary sources failed
-    needs_fallback = (
-        not any(lines['forwards']) or
-        not any(lines['defense']) or
-        not lines['goalies']
-    )
-
-    if needs_fallback:
-        print(f"  Trying DailyFaceoff as fallback...")
-        df_lines = get_dailyfaceoff_lines(team_abbrev)
-        if df_lines:
-            if not any(lines['forwards']):
-                lines['forwards'] = df_lines.get('forwards', lines['forwards'])
-                print(f"  DailyFaceoff fallback: Got forwards")
-            if not any(lines['defense']):
-                lines['defense'] = df_lines.get('defense', lines['defense'])
-                print(f"  DailyFaceoff fallback: Got defense")
-            if not lines['goalies']:
-                lines['goalies'] = df_lines.get('goalies', lines['goalies'])
-                print(f"  DailyFaceoff fallback: Got goalies")
-            if not lines['injuries']:
-                lines['injuries'] = df_lines.get('injuries', lines['injuries'])
-                print(f"  DailyFaceoff fallback: Got injuries")
-        else:
-            print(f"  DailyFaceoff fallback: Failed (likely blocked)")
-
-    return lines
-
-
-def get_team_stats(team_abbrev):
-    """Fetch team statistics from NHL API."""
-    url = "https://api-web.nhle.com/v1/standings/now"
-    standings = fetch_json(url)
-
-    if not standings:
-        return None, None
-
-    all_teams = standings.get('standings', [])
-
-    team_data = None
-    season_id = None
-    for t in all_teams:
-        if t.get('teamAbbrev', {}).get('default') == team_abbrev:
-            team_data = t
-            season_id = t.get('seasonId')
-            break
-
+def get_team_stats(http, team_abbrev, standings, game_type=2):
+    """Goal differential, GF/GP, GA/GP, PP%, PK% with league ranks."""
+    team_data = find_team_standing(standings, team_abbrev)
     if not team_data:
-        return None, None
+        return None
 
-    gp = team_data.get('gamesPlayed', 1)
-    gf = team_data.get('goalFor', 0)
-    ga = team_data.get('goalAgainst', 0)
-    diff = team_data.get('goalDifferential', gf - ga)
+    def per_game(t, key):
+        gp = t.get('gamesPlayed', 0)
+        return t.get(key, 0) / gp if gp else 0
 
-    gf_per_game = gf / gp if gp > 0 else 0
-    ga_per_game = ga / gp if gp > 0 else 0
+    diff = team_data.get('goalDifferential', team_data.get('goalFor', 0) - team_data.get('goalAgainst', 0))
+    gf_per_game = per_game(team_data, 'goalFor')
+    ga_per_game = per_game(team_data, 'goalAgainst')
 
-    diff_rank = 1
-    gf_rank = 1
-    ga_rank = 1
+    diff_rank = 1 + sum(1 for t in standings if t.get('goalDifferential', 0) > diff)
+    gf_rank = 1 + sum(1 for t in standings if per_game(t, 'goalFor') > gf_per_game)
+    ga_rank = 1 + sum(1 for t in standings if per_game(t, 'goalAgainst') < ga_per_game)
 
-    for t in all_teams:
-        t_gp = t.get('gamesPlayed', 1)
-        t_diff = t.get('goalDifferential', 0)
-        t_gf = t.get('goalFor', 0) / t_gp if t_gp > 0 else 0
-        t_ga = t.get('goalAgainst', 0) / t_gp if t_gp > 0 else 0
-
-        if t_diff > diff:
-            diff_rank += 1
-        if t_gf > gf_per_game:
-            gf_rank += 1
-        if t_ga < ga_per_game:
-            ga_rank += 1
-
-    pp_pct = 0
-    pk_pct = 0
-    pp_rank = 1
-    pk_rank = 1
-
+    pp_pct = pk_pct = 0.0
+    pp_rank = pk_rank = None
+    season_id = team_data.get('seasonId')
     if season_id:
-        stats_url = f"https://api.nhle.com/stats/rest/en/team/summary?cayenneExp=seasonId={season_id}"
-        team_stats = fetch_json(stats_url)
+        url = (f"{NHL_STATS_API}/team/summary?cayenneExp="
+               f"gameTypeId={game_type}%20and%20seasonId={season_id}")
+        summary = (http.get_json(url) or {}).get('data') or []
+        target = normalize_name(TEAM_FULL_NAMES.get(team_abbrev, ''))
+        mine = next((s for s in summary if normalize_name(s.get('teamFullName')) == target), None)
+        if mine:
+            pp_pct = (mine.get('powerPlayPct') or 0) * 100
+            pk_pct = (mine.get('penaltyKillPct') or 0) * 100
+            pp_rank = 1 + sum(1 for s in summary if (s.get('powerPlayPct') or 0) * 100 > pp_pct)
+            pk_rank = 1 + sum(1 for s in summary if (s.get('penaltyKillPct') or 0) * 100 > pk_pct)
+        else:
+            log.warning("No special-teams stats found for %s", team_abbrev)
 
-        if team_stats and 'data' in team_stats:
-            target_name = TEAM_FULL_NAMES.get(team_abbrev, '')
-            all_stats = team_stats['data']
-
-            for stat in all_stats:
-                if stat.get('teamFullName') == target_name:
-                    pp_pct = stat.get('powerPlayPct', 0) * 100
-                    pk_pct = stat.get('penaltyKillPct', 0) * 100
-                    break
-
-            for stat in all_stats:
-                t_pp = stat.get('powerPlayPct', 0) * 100
-                t_pk = stat.get('penaltyKillPct', 0) * 100
-                if t_pp > pp_pct:
-                    pp_rank += 1
-                if t_pk > pk_pct:
-                    pk_rank += 1
-
-    stats = {
+    return {
         'diff': diff,
         'diff_rank': diff_rank,
         'gf_per_game': round(gf_per_game, 2),
@@ -866,14 +553,9 @@ def get_team_stats(team_abbrev):
         'pk_rank': pk_rank,
     }
 
-    return team_data, stats
 
-
-def get_team_leaders(team_abbrev):
-    """Fetch team leaders from NHL API."""
-    url = f"https://api-web.nhle.com/v1/club-stats/{team_abbrev}/now"
-    data = fetch_json(url)
-
+def get_team_leaders(club_stats, team_games_played=0):
+    """Team leaders from NHL club-stats. TOI leaders must have played a third of team games."""
     leaders = {
         'goals': {'name': 'N/A', 'value': 0},
         'assists': {'name': 'N/A', 'value': 0},
@@ -883,141 +565,587 @@ def get_team_leaders(team_abbrev):
         'toi_d': {'name': 'N/A', 'value': '0:00'},
         'toi_f': {'name': 'N/A', 'value': '0:00'},
     }
-
-    if not data:
+    skaters = (club_stats or {}).get('skaters') or []
+    if not skaters:
         return leaders
 
-    skaters = data.get('skaters', [])
+    for stat_key, api_key in [('goals', 'goals'), ('assists', 'assists'), ('points', 'points'),
+                              ('plusMinus', 'plusMinus'), ('pim', 'penaltyMinutes')]:
+        best = max(skaters, key=lambda p: p.get(api_key, 0))
+        value = best.get(api_key, 0)
+        if stat_key != 'plusMinus' and value <= 0:
+            continue
+        if stat_key == 'plusMinus':
+            value = f"+{value}" if value > 0 else str(value)
+        leaders[stat_key] = {'name': player_full_name(best), 'value': value}
 
-    for stat_key, api_key in [('goals', 'goals'), ('assists', 'assists'),
-                               ('points', 'points'), ('plusMinus', 'plusMinus'),
-                               ('pim', 'penaltyMinutes')]:
-        best = None
-        best_val = -9999 if stat_key != 'pim' else 0
-        for player in skaters:
-            val = player.get(api_key, 0)
-            if stat_key == 'plusMinus':
-                if val > best_val:
-                    best_val = val
-                    best = player
-            elif val > best_val:
-                best_val = val
-                best = player
-        if best:
-            name = html_module.escape(f"{best.get('firstName', {}).get('default', '')} {best.get('lastName', {}).get('default', '')}".strip())
-            if stat_key == 'plusMinus':
-                leaders[stat_key] = {'name': name, 'value': f"+{best_val}" if best_val > 0 else str(best_val)}
-            else:
-                leaders[stat_key] = {'name': name, 'value': best_val}
+    min_games = max(1, team_games_played // 3)
+    qualified = [p for p in skaters if p.get('gamesPlayed', 0) >= min_games] or skaters
 
     def seconds_to_time(seconds):
-        mins = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{mins}:{secs:02d}"
+        return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
 
-    best_d = None
-    best_d_toi = 0
-    best_f = None
-    best_f_toi = 0
-
-    for player in skaters:
-        pos = player.get('positionCode', 'F')
-        toi = player.get('avgTimeOnIcePerGame', 0)
-        if pos == 'D':
-            if toi > best_d_toi:
-                best_d_toi = toi
-                best_d = player
-        else:
-            if toi > best_f_toi:
-                best_f_toi = toi
-                best_f = player
-
-    if best_d:
-        name = html_module.escape(f"{best_d.get('firstName', {}).get('default', '')} {best_d.get('lastName', {}).get('default', '')}".strip())
-        leaders['toi_d'] = {'name': name, 'value': seconds_to_time(best_d_toi)}
-
-    if best_f:
-        name = html_module.escape(f"{best_f.get('firstName', {}).get('default', '')} {best_f.get('lastName', {}).get('default', '')}".strip())
-        leaders['toi_f'] = {'name': name, 'value': seconds_to_time(best_f_toi)}
-
+    for key, is_defense in (('toi_d', True), ('toi_f', False)):
+        group = [p for p in qualified if (p.get('positionCode') == 'D') == is_defense]
+        if group:
+            best = max(group, key=lambda p: p.get('avgTimeOnIcePerGame', 0))
+            leaders[key] = {'name': player_full_name(best),
+                            'value': seconds_to_time(best.get('avgTimeOnIcePerGame', 0))}
     return leaders
 
 
-def get_goalie_stats(team_abbrev, goalie_name=None):
-    """Fetch goaltender statistics."""
-    url = f"https://api-web.nhle.com/v1/club-stats/{team_abbrev}/now"
-    data = fetch_json(url)
-
-    if not data:
-        return None
-
-    goalies = data.get('goalies', [])
+def get_goalie_stats(club_stats, goalie_name=None, player_id=None):
+    """Season stats for a goalie (matched by id or name); defaults to the goalie with most starts."""
+    goalies = (club_stats or {}).get('goalies') or []
     if not goalies:
         return None
 
     selected = None
-    if goalie_name:
-        goalie_name_lower = goalie_name.lower()
+    if player_id:
+        selected = next((g for g in goalies if g.get('playerId') == player_id), None)
+    if not selected and goalie_name:
+        wanted = normalize_name(goalie_name)
+        wanted_last = wanted.split(" ")[-1] if wanted else ""
         for g in goalies:
-            full_name = f"{g.get('firstName', {}).get('default', '')} {g.get('lastName', {}).get('default', '')}".lower()
-            if goalie_name_lower in full_name or full_name in goalie_name_lower:
+            full = normalize_name(player_full_name(g))
+            if full == wanted or (wanted and (wanted in full or full in wanted)):
                 selected = g
                 break
-
+        if not selected and wanted_last:
+            matches = [g for g in goalies if normalize_name(player_full_name(g)).split(" ")[-1] == wanted_last]
+            if len(matches) == 1:
+                selected = matches[0]
     if not selected:
-        selected = max(goalies, key=lambda x: x.get('gamesPlayed', 0))
+        if goalie_name:
+            log.warning("Goalie '%s' not found in team stats; using the goalie with most starts", goalie_name)
+        selected = max(goalies, key=lambda g: (g.get('gamesStarted', 0), g.get('gamesPlayed', 0)))
 
-    if selected:
-        wins = selected.get('wins', 0)
-        losses = selected.get('losses', 0)
-        otl = selected.get('overtimeLosses', 0)
-        # Calculate games played from the record (more reliable than gamesStarted)
-        games_played = wins + losses + otl
+    wins = selected.get('wins', 0)
+    losses = selected.get('losses', 0)
+    otl = selected.get('overtimeLosses', 0)
+    return {
+        'name': player_full_name(selected),
+        'player_id': selected.get('playerId'),
+        'games_started': selected.get('gamesStarted', wins + losses + otl),
+        'record': f"{wins}-{losses}-{otl}",
+        'sv_pct': format_three_decimals(selected.get('savePercentage', 0)),
+        'gaa': f"{selected.get('goalsAgainstAverage', 0):.2f}",
+        'shutouts': selected.get('shutouts', 0),
+    }
 
-        return {
-            'name': html_module.escape(f"{selected.get('firstName', {}).get('default', '')} {selected.get('lastName', {}).get('default', '')}".strip()),
-            'games_started': games_played,
-            'record': f"{wins}-{losses}-{otl}",
-            'sv_pct': f".{int(selected.get('savePercentage', 0) * 1000):03d}"[:4] if selected.get('savePercentage', 0) > 0 else ".000",
-            'gaa': f"{selected.get('goalsAgainstAverage', 0):.2f}",
-            'shutouts': selected.get('shutouts', 0),
-        }
+
+# ---------------------------------------------------------------------------
+# DailyFaceoff (page JSON)
+# ---------------------------------------------------------------------------
+
+def extract_next_data(page_html):
+    """Return the parsed __NEXT_DATA__ JSON embedded in a Next.js page, or None."""
+    if not page_html:
+        return None
+    match = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', page_html, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except ValueError:
+        return None
+
+
+_INJURY_STATUS_MAP = {
+    'ir': 'IR', 'ltir': 'LTIR', 'out': 'OUT', 'dtd': 'DTD', 'day-to-day': 'DTD',
+    'susp': 'SUSP', 'suspended': 'SUSP', 'suspension': 'SUSP',
+    'injured reserve': 'IR', 'long-term injured reserve': 'LTIR',
+    'questionable': 'Q', 'doubtful': 'D', 'probable': 'P',
+}
+
+
+def parse_dailyfaceoff_lineup(next_data):
+    """Parse DailyFaceoff team line-combinations page data.
+
+    Returns {'forwards': [[lw, c, rw] x4], 'defense': [[ld, rd] x3], 'goalies': [g1, g2],
+             'injuries': [...], 'updated_at': str} or None.
+    """
+    try:
+        combos = next_data['props']['pageProps']['combinations']
+        players = combos['players']
+    except (KeyError, TypeError):
+        return None
+
+    slot_order = {'lw': 0, 'c': 1, 'rw': 2, 'ld': 0, 'rd': 1, 'g1': 0, 'g2': 1}
+    groups = {}
+    injuries = []
+    for p in players:
+        category = p.get('categoryIdentifier')
+        group = p.get('groupIdentifier') or ''
+        name = (p.get('name') or '').strip()
+        if not name:
+            continue
+        if category == 'ev':
+            groups.setdefault(group, []).append((slot_order.get(p.get('positionIdentifier'), 9), name))
+        elif category == 'oi':
+            raw = (p.get('injuryStatus') or group or 'ir').lower()
+            injuries.append({'name': name, 'status': _INJURY_STATUS_MAP.get(raw, raw.upper()),
+                             'detail': 'Undisclosed'})
+
+    def names(group_id):
+        return [n for _, n in sorted(groups.get(group_id, []))]
+
+    lineup = {
+        'forwards': [names(f"f{i}") for i in range(1, 5)],
+        'defense': [names(f"d{i}") for i in range(1, 4)],
+        'goalies': names('g'),
+        'injuries': injuries,
+        'updated_at': combos.get('updatedAt'),
+    }
+    if not any(lineup['forwards']) and not any(lineup['defense']):
+        return None
+    return lineup
+
+
+def get_dailyfaceoff_lineup(http, team_abbrev):
+    slug = DAILYFACEOFF_SLUGS.get(team_abbrev)
+    if not slug:
+        return None
+    page = http.get_text(f"{DAILYFACEOFF}/teams/{slug}/line-combinations")
+    lineup = parse_dailyfaceoff_lineup(extract_next_data(page))
+    if page and not lineup:
+        log.warning("DailyFaceoff page for %s loaded but had no line data (site layout may have changed)",
+                    team_abbrev)
+    return lineup
+
+
+def parse_dailyfaceoff_starting_goalie(next_data, team_abbrev):
+    """Find the team's goalie on a DailyFaceoff starting-goalies page.
+
+    Returns {'name', 'status'} where status is DailyFaceoff's label
+    ('Confirmed', 'Likely', ...) or 'Unconfirmed' when no news yet.
+    """
+    slug = DAILYFACEOFF_SLUGS.get(team_abbrev)
+    try:
+        games = next_data['props']['pageProps']['data'] or []
+    except (KeyError, TypeError):
+        return None
+    for game in games:
+        for side in ('home', 'away'):
+            if game.get(f'{side}TeamSlug') == slug or game.get(f'{side}TeamAbbreviation') == team_abbrev:
+                name = (game.get(f'{side}GoalieName') or '').strip()
+                if name:
+                    return {'name': name, 'status': game.get(f'{side}NewsStrengthName') or 'Unconfirmed'}
     return None
 
 
+def get_dailyfaceoff_starting_goalie(http, team_abbrev, game_date):
+    page = http.get_text(f"{DAILYFACEOFF}/starting-goalies/{game_date}")
+    return parse_dailyfaceoff_starting_goalie(extract_next_data(page), team_abbrev)
+
+
+# ---------------------------------------------------------------------------
+# Injuries (ESPN API)
+# ---------------------------------------------------------------------------
+
+def parse_espn_injuries(data, team_abbrev):
+    """Injuries for one team from ESPN's league injuries JSON.
+
+    ESPN omits teams with no injuries, so a missing team means an empty list.
+    """
+    target = normalize_name(TEAM_FULL_NAMES.get(team_abbrev, ''))
+    for team in (data or {}).get('injuries') or []:
+        if normalize_name(team.get('displayName')) != target:
+            continue
+        result = []
+        for item in team.get('injuries') or []:
+            name = ((item.get('athlete') or {}).get('displayName') or '').strip()
+            if not name:
+                continue
+            status_text = (item.get('status') or '').lower()
+            status = _INJURY_STATUS_MAP.get(status_text) or ((item.get('type') or {}).get('abbreviation') or 'IR')
+            details = item.get('details') or {}
+            detail = details.get('type') or 'Undisclosed'
+            if detail.lower() in ('not specified', 'undisclosed', ''):
+                detail = 'Undisclosed'
+            result.append({'name': name, 'status': status, 'detail': detail})
+        return result
+    return []
+
+
+def get_espn_injuries(http, team_abbrev):
+    """Team injuries from ESPN, or None if ESPN couldn't be reached."""
+    data = http.get_json(ESPN_INJURIES_API)
+    if data is None or 'injuries' not in data:
+        return None
+    return parse_espn_injuries(data, team_abbrev)
+
+
+# ---------------------------------------------------------------------------
+# Lines derived from NHL shift charts (fallback that can't be bot-blocked)
+# ---------------------------------------------------------------------------
+
+def _boxscore_side(boxscore, team_abbrev):
+    if (boxscore.get('homeTeam') or {}).get('abbrev') == team_abbrev:
+        return 'homeTeam'
+    if (boxscore.get('awayTeam') or {}).get('abbrev') == team_abbrev:
+        return 'awayTeam'
+    return None
+
+
+def boxscore_roster(boxscore, team_abbrev):
+    """{'forwards': {id: pos}, 'defense': {id: pos}, 'goalies': [goalie dicts], 'names': {id: name}}"""
+    side = _boxscore_side(boxscore or {}, team_abbrev)
+    if not side:
+        return None
+    stats = (boxscore.get('playerByGameStats') or {}).get(side) or {}
+    names = {}
+    for group in ('forwards', 'defense', 'goalies'):
+        for p in stats.get(group) or []:
+            names[p['playerId']] = (p.get('name') or {}).get('default', '')
+    return {
+        'forwards': {p['playerId']: p.get('position', 'C') for p in stats.get('forwards') or []},
+        'defense': {p['playerId']: 'D' for p in stats.get('defense') or []},
+        'goalies': stats.get('goalies') or [],
+        'names': names,
+    }
+
+
+def _order_line(player_ids, positions, slots):
+    """Arrange players into slots (e.g. L/C/R) with as few position mismatches as possible."""
+    best = None
+    for perm in permutations(player_ids):
+        cost = sum(1 for pid, slot in zip(perm, slots) if positions.get(pid) != slot)
+        if best is None or cost < best[0]:
+            best = (cost, perm)
+    return list(best[1]) if best else list(player_ids)
+
+
+def build_lines_from_shifts(shifts, team_abbrev, forwards, defense, goalie_ids):
+    """Reconstruct forward lines and defense pairs from one game's shift chart.
+
+    shifts:     NHL shiftcharts rows (both teams) with teamAbbrev, playerId, period,
+                startTime, endTime, typeCode (517 = shift)
+    forwards:   {playerId: 'L'|'C'|'R'} for the team's dressed forwards
+    defense:    {playerId: 'D'} for the team's dressed defensemen
+    goalie_ids: ids of every goalie in the game (both teams), excluded from skater counts
+
+    Players who spent the most 5-on-5 time together are grouped. Lines are ordered
+    by total ice time (first line = most used).
+    Returns {'forwards': [[ids] x<=4], 'defense': [[ids] x<=3]}.
+    """
+    on_ice = {}  # period -> list of sets of (team, playerId), one per second
+    for row in shifts or []:
+        if row.get('typeCode') not in (517, None):
+            continue
+        start, end = parse_clock(row.get('startTime')), parse_clock(row.get('endTime'))
+        if end <= start:
+            continue
+        timeline = on_ice.setdefault(row.get('period', 1), [])
+        if len(timeline) < end:
+            timeline.extend(set() for _ in range(end - len(timeline)))
+        key = (row.get('teamAbbrev'), row.get('playerId'))
+        for second in range(start, end):
+            timeline[second].add(key)
+
+    goalie_ids = set(goalie_ids)
+    tracked = set(forwards) | set(defense)
+    pair_time_5v5, pair_time_all = {}, {}
+    toi_5v5, toi_all = {}, {}
+
+    for timeline in on_ice.values():
+        for players in timeline:
+            mine = [pid for team, pid in players if team == team_abbrev and pid in tracked]
+            if not mine:
+                continue
+            skaters_mine = sum(1 for team, pid in players if team == team_abbrev and pid not in goalie_ids)
+            skaters_theirs = sum(1 for team, pid in players if team != team_abbrev and pid not in goalie_ids)
+            even = skaters_mine == 5 and skaters_theirs == 5
+            for pid in mine:
+                toi_all[pid] = toi_all.get(pid, 0) + 1
+                if even:
+                    toi_5v5[pid] = toi_5v5.get(pid, 0) + 1
+            for a, b in combinations(sorted(mine), 2):
+                pair_time_all[(a, b)] = pair_time_all.get((a, b), 0) + 1
+                if even:
+                    pair_time_5v5[(a, b)] = pair_time_5v5.get((a, b), 0) + 1
+
+    # Use 5-on-5 time when there is enough of it, otherwise all situations
+    use_even = sum(toi_5v5.values()) > 600
+    pair_time = pair_time_5v5 if use_even else pair_time_all
+    toi = toi_5v5 if use_even else toi_all
+
+    def together(group):
+        return sum(pair_time.get(tuple(sorted(pair)), 0) for pair in combinations(group, 2))
+
+    def greedy_groups(candidates, size, count):
+        remaining = [pid for pid in candidates if toi.get(pid, 0) > 0]
+        groups = []
+        while len(groups) < count and len(remaining) >= size:
+            best = max(combinations(remaining, size),
+                       key=lambda g: (together(g), sum(toi.get(pid, 0) for pid in g)))
+            groups.append(list(best))
+            remaining = [pid for pid in remaining if pid not in best]
+        if len(groups) < count and remaining:
+            groups.append(remaining[:size])
+        # Order by total ice time in all situations, the best proxy for the coach's depth chart
+        groups.sort(key=lambda g: sum(toi_all.get(pid, 0) for pid in g), reverse=True)
+        return groups
+
+    forward_lines = [_order_line(g, forwards, ['L', 'C', 'R']) for g in greedy_groups(list(forwards), 3, 4)]
+    defense_pairs = greedy_groups(list(defense), 2, 3)
+    return {'forwards': forward_lines, 'defense': defense_pairs}
+
+
+def derive_lines_from_last_game(http, team_abbrev, schedule, club_stats, before_date=None):
+    """Line combinations from the team's most recent completed game (NHL API only)."""
+    recent = completed_games_before(schedule, before_date)
+    if not recent:
+        return None
+    game = recent[0]
+    boxscore = http.get_json(f"{NHL_API}/gamecenter/{game['id']}/boxscore")
+    shifts = (http.get_json(f"{NHL_STATS_API}/shiftcharts?cayenneExp=gameId={game['id']}") or {}).get('data')
+    roster = boxscore_roster(boxscore, team_abbrev) if boxscore else None
+    if not roster or not shifts:
+        return None
+
+    other_side = 'awayTeam' if _boxscore_side(boxscore, team_abbrev) == 'homeTeam' else 'homeTeam'
+    other_goalies = ((boxscore.get('playerByGameStats') or {}).get(other_side) or {}).get('goalies') or []
+    goalie_ids = [g['playerId'] for g in roster['goalies'] + other_goalies]
+
+    lines = build_lines_from_shifts(shifts, team_abbrev, roster['forwards'], roster['defense'], goalie_ids)
+
+    full_names = {p.get('playerId'): player_full_name(p) for p in (club_stats or {}).get('skaters') or []}
+
+    def name(pid):
+        return full_names.get(pid) or roster['names'].get(pid) or str(pid)
+
+    return {
+        'forwards': [[name(pid) for pid in line] for line in lines['forwards']],
+        'defense': [[name(pid) for pid in pair] for pair in lines['defense']],
+        'goalies': [],
+        'injuries': [],
+        'source_game': game.get('gameDate'),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Starting goalie projection
+# ---------------------------------------------------------------------------
+
+def project_starting_goalie(team_abbrev, recent_boxscores, game_date=None, injured_names=(), club_stats=None):
+    """Rule-based guess at the starting goalie when no confirmation exists.
+
+    recent_boxscores: the team's most recent completed games' box scores, newest first.
+    Rules, in order:
+      1. Only goalies who dressed for the most recent game are candidates (that is the
+         current tandem; it naturally excludes injured or demoted goalies). Anyone on
+         the injury list is removed.
+      2. Second night of a back-to-back: the goalie who did NOT start last night.
+      3. Otherwise: whoever started the most of the recent games.
+      4. Ties: more season starts, then whoever started the most recent game.
+    Returns {'name', 'player_id', 'status': 'Projected', 'reason'} or None.
+    """
+    injured = {normalize_name(n) for n in injured_names}
+    full_names = {g.get('playerId'): player_full_name(g) for g in (club_stats or {}).get('goalies') or []}
+    season_starts = {g.get('playerId'): g.get('gamesStarted', 0) for g in (club_stats or {}).get('goalies') or []}
+
+    def display_name(goalie):
+        return full_names.get(goalie['playerId']) or (goalie.get('name') or {}).get('default', '')
+
+    games = []  # (gameDate, starter_id, [goalies dressed])
+    for box in recent_boxscores or []:
+        roster = boxscore_roster(box, team_abbrev)
+        if not roster or not roster['goalies']:
+            continue
+        starter = next((g['playerId'] for g in roster['goalies'] if g.get('starter')), None)
+        games.append((box.get('gameDate'), starter, roster['goalies']))
+
+    if games:
+        tandem = [g for g in games[0][2] if normalize_name(display_name(g)) not in injured]
+    else:
+        tandem = []
+    if not tandem:
+        # No box scores: fall back to the team's season stats
+        tandem = [{'playerId': g.get('playerId'), 'name': {'default': player_full_name(g)}}
+                  for g in sorted((club_stats or {}).get('goalies') or [],
+                                  key=lambda g: g.get('gamesStarted', 0), reverse=True)
+                  if normalize_name(player_full_name(g)) not in injured][:2]
+    if not tandem:
+        return None
+
+    by_id = {g['playerId']: g for g in tandem}
+
+    def result(player_id, reason):
+        return {'name': display_name(by_id[player_id]), 'player_id': player_id,
+                'status': 'Projected', 'reason': reason}
+
+    # Rule 2: back-to-back
+    if games and game_date and len(tandem) > 1:
+        last_date, last_starter, _ = games[0]
+        try:
+            gap = (date.fromisoformat(game_date) - date.fromisoformat(last_date)).days
+        except (TypeError, ValueError):
+            gap = None
+        if gap == 1 and last_starter in by_id:
+            other = next(pid for pid in by_id if pid != last_starter)
+            return result(other, f"second game of a back-to-back; "
+                                 f"{display_name(by_id[last_starter])} started last night")
+
+    # Rules 3-4: recent workload
+    window = games[:GOALIE_LOOKBACK_GAMES]
+    recent_starts = {pid: sum(1 for _, starter, _ in window if starter == pid) for pid in by_id}
+    last_starter = games[0][1] if games else None
+    best = max(by_id, key=lambda pid: (recent_starts[pid], season_starts.get(pid, 0), pid == last_starter))
+    if window:
+        reason = f"started {recent_starts[best]} of the last {len(window)} games"
+    else:
+        reason = "most starts this season"
+    return result(best, reason)
+
+
+def choose_starting_goalie(http, team_abbrev, game_info, schedule, club_stats, injuries, lineup, notes=None):
+    """Pick the starting goalie: confirmed > projected by rules > DailyFaceoff's unconfirmed pick."""
+    team_name = TEAM_FULL_NAMES.get(team_abbrev, team_abbrev)
+    game_date = (game_info or {}).get('eastern_date') or datetime.now().strftime("%Y-%m-%d")
+
+    dfo = get_dailyfaceoff_starting_goalie(http, team_abbrev, game_date)
+    if dfo and dfo['status'] in ('Confirmed', 'Likely', 'Expected'):
+        log.info("  Starting goalie (DailyFaceoff, %s): %s", dfo['status'], dfo['name'])
+        return dfo
+
+    recent = completed_games_before(schedule, game_date)[:GOALIE_LOOKBACK_GAMES]
+    boxscores = [b for b in (http.get_json(f"{NHL_API}/gamecenter/{g['id']}/boxscore") for g in recent) if b]
+    injured_names = [i['name'] for i in injuries or []]
+    projected = project_starting_goalie(team_abbrev, boxscores, game_date, injured_names, club_stats)
+    if projected:
+        message = f"{team_name} starting goalie not confirmed yet; projected {projected['name']} ({projected['reason']})"
+        if dfo and normalize_name(dfo['name']) != normalize_name(projected['name']):
+            message += f". DailyFaceoff currently lists {dfo['name']} (unconfirmed)"
+        add_note(notes, message)
+        return projected
+
+    if dfo:
+        add_note(notes, f"{team_name} starting goalie not confirmed; using DailyFaceoff's unconfirmed pick {dfo['name']}")
+        return dfo
+    if lineup and lineup.get('goalies'):
+        add_note(notes, f"{team_name} starting goalie not confirmed; using DailyFaceoff depth chart ({lineup['goalies'][0]})")
+        return {'name': lineup['goalies'][0], 'status': 'Projected'}
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Gathering everything for a team
+# ---------------------------------------------------------------------------
+
+def _lineup_complete(lineup):
+    return (lineup and len([l for l in lineup['forwards'] if len(l) == 3]) == 4
+            and len([p for p in lineup['defense'] if len(p) == 2]) == 3)
+
+
+def get_line_combinations(http, team_abbrev, schedule, club_stats, game_date=None, notes=None):
+    """Lines from DailyFaceoff, falling back to lines derived from the last game's shifts."""
+    team_name = TEAM_FULL_NAMES.get(team_abbrev, team_abbrev)
+    lineup = get_dailyfaceoff_lineup(http, team_abbrev)
+    if _lineup_complete(lineup):
+        log.info("  Lines: DailyFaceoff (updated %s)", lineup.get('updated_at') or 'unknown')
+        return lineup, 'DailyFaceoff'
+
+    derived = derive_lines_from_last_game(http, team_abbrev, schedule, club_stats, game_date)
+    if derived and any(derived['forwards']):
+        reason = "DailyFaceoff was unavailable" if not lineup else "DailyFaceoff's lines were incomplete"
+        add_note(notes, f"{team_name} lines are from their last game ({derived['source_game']}) "
+                        f"because {reason}; double-check before posting")
+        if lineup:  # keep DailyFaceoff's goalies/injuries even if its lines were partial
+            derived['goalies'] = lineup.get('goalies', [])
+            derived['injuries'] = lineup.get('injuries', [])
+        return derived, 'last game'
+
+    if lineup:
+        add_note(notes, f"{team_name} lines from DailyFaceoff are incomplete")
+        return lineup, 'DailyFaceoff (partial)'
+    add_note(notes, f"Could not get line combinations for {team_name}; lineup left unchanged")
+    return None, None
+
+
+def gather_team_data(http, team_abbrev, standings, game_info=None, notes=None):
+    """Fetch everything needed for one team's section of the GDT."""
+    log.info("Fetching data for %s...", team_abbrev)
+    game_type = (game_info or {}).get('game_type', 2)
+    game_date = (game_info or {}).get('eastern_date')
+
+    standing = find_team_standing(standings, team_abbrev)
+    stats = get_team_stats(http, team_abbrev, standings, game_type) if standing else None
+    club_stats = get_club_stats(http, team_abbrev)
+    leaders = get_team_leaders(club_stats, (standing or {}).get('gamesPlayed', 0))
+    schedule = get_season_schedule(http, team_abbrev)
+
+    lineup, lines_source = get_line_combinations(http, team_abbrev, schedule, club_stats, game_date, notes)
+
+    injuries = get_espn_injuries(http, team_abbrev)
+    if injuries is None:
+        injuries = (lineup or {}).get('injuries')
+        if injuries is not None:
+            log.info("  Injuries: DailyFaceoff (ESPN unavailable)")
+        else:
+            add_note(notes, f"Could not get injuries for {TEAM_FULL_NAMES.get(team_abbrev, team_abbrev)}")
+    else:
+        log.info("  Injuries: ESPN (%d listed)", len(injuries))
+
+    # Don't list injured players in lines rebuilt from an earlier game
+    if lineup and injuries and lines_source == 'last game':
+        hurt = {normalize_name(i['name']) for i in injuries}
+        lineup['forwards'] = [[n for n in line if normalize_name(n) not in hurt] for line in lineup['forwards']]
+        lineup['defense'] = [[n for n in pair if normalize_name(n) not in hurt] for pair in lineup['defense']]
+
+    starter = choose_starting_goalie(http, team_abbrev, game_info, schedule, club_stats, injuries, lineup, notes)
+    goalie = get_goalie_stats(club_stats, (starter or {}).get('name'), (starter or {}).get('player_id'))
+    if goalie and starter:
+        goalie['status'] = starter.get('status')
+
+    return {
+        'abbrev': team_abbrev,
+        'standing': standing,
+        'stats': stats,
+        'leaders': leaders,
+        'lineup': lineup,
+        'goalie': goalie,
+        'injuries': injuries,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Template updating
+# ---------------------------------------------------------------------------
+
+def _sub_once(pattern, replacement_fn, text, flags=re.IGNORECASE | re.DOTALL):
+    """re.sub with a function replacement (so data can never be read as a backreference)."""
+    return re.sub(pattern, replacement_fn, text, count=1, flags=flags)
+
+
+def set_gdt_field(section, tag_pattern, value):
+    """Replace the contents of <p data-gdt="***UPDATE ...***"> whose tag matches tag_pattern."""
+    pattern = r'(<p\s+data-gdt="\*\*\*UPDATE\s+' + tag_pattern + r'\*\*\*"\s*>).*?(</p>)'
+    return _sub_once(pattern, lambda m: f"{m.group(1)}\n\t\t\t\t{value}\n\t\t\t{m.group(2)}", section)
+
+
+def esc(text):
+    return html_module.escape(str(text), quote=False)
+
+
 def update_team_logos(content, nyr_abbrev, opponent_abbrev):
-    """Update team logos throughout the template."""
+    """Update team logos throughout the template (order: NYR, opponent, NYR, opponent)."""
     nyr_logo_url = TEAM_LOGO_URLS.get(nyr_abbrev)
     opponent_logo_url = TEAM_LOGO_URLS.get(opponent_abbrev)
-
     if not nyr_logo_url or not opponent_logo_url:
-        print(f"Warning: Could not find logo URLs for {nyr_abbrev} or {opponent_abbrev}")
+        log.warning("Could not find logo URLs for %s or %s", nyr_abbrev, opponent_abbrev)
         return content
 
-    # Find all img tags with data-src containing logo URLs
-    # Pattern matches data-src="...invisioncic.com...png..." or "...blueshirtsbrotherhood.com...png..."
     logo_pattern = r'(data-src=")[^"]*(?:invisioncic\.com|blueshirtsbrotherhood\.com)[^"]*\.png[^"]*(")'
-
-    # Find all matches and their positions
     matches = list(re.finditer(logo_pattern, content, re.IGNORECASE))
-
     if len(matches) < 4:
-        print(f"Warning: Found only {len(matches)} logo images, expected 4")
+        log.warning("Found only %d logo images, expected 4", len(matches))
 
-    # Replace logos in reverse order to preserve positions
-    # Logo order: 1=NYR (header), 2=Opponent (header), 3=NYR (section), 4=Opponent (section)
-    replacements = []
-    for i, match in enumerate(matches):
-        if i == 0 or i == 2:  # NYR logos (1st and 3rd)
-            replacements.append((match.start(), match.end(), f'{match.group(1)}{nyr_logo_url}{match.group(2)}'))
-        elif i == 1 or i == 3:  # Opponent logos (2nd and 4th)
-            replacements.append((match.start(), match.end(), f'{match.group(1)}{opponent_logo_url}{match.group(2)}'))
+    for i, match in reversed(list(enumerate(matches[:4]))):
+        url = nyr_logo_url if i % 2 == 0 else opponent_logo_url
+        content = content[:match.start()] + f'{match.group(1)}{url}{match.group(2)}' + content[match.end():]
 
-    # Apply replacements in reverse order
-    for start, end, replacement in reversed(replacements):
-        content = content[:start] + replacement + content[end:]
-
-    print(f"Updated logos: NYR and {opponent_abbrev}")
+    log.info("Updated logos: %s and %s", nyr_abbrev, opponent_abbrev)
     return content
 
 
@@ -1026,396 +1154,207 @@ def update_game_header(content, game_info, nyr_game_number):
     if not game_info:
         return content
 
-    # Update game number and date in the header
-    # Pattern: REGULAR SEASON GAME #XX &mdash; M/D/YY
-    game_header_pattern = r'(REGULAR SEASON GAME #)\d+(\s*&mdash;\s*)\d+/\d+/\d+'
-    if nyr_game_number:
-        game_header_replacement = rf'\g<1>{nyr_game_number}\g<2>{game_info["date"]}'
-        content = re.sub(game_header_pattern, game_header_replacement, content, count=1)
+    if nyr_game_number and game_info.get('date'):
+        content = _sub_once(r'(REGULAR SEASON GAME #)\d+(\s*&mdash;\s*)\d+/\d+/\d+',
+                            lambda m: f"{m.group(1)}{nyr_game_number}{m.group(2)}{game_info['date']}", content)
 
-    # Update time
-    # Pattern: <b>Time</b>: X:XX PM
-    time_pattern = r'(<b>Time</b>:\s*)\d+:\d+\s*[AP]M'
-    time_replacement = rf'\g<1>{game_info["time"]}'
-    content = re.sub(time_pattern, time_replacement, content, count=1, flags=re.IGNORECASE)
+    if game_info.get('time'):
+        content = _sub_once(r'(<b>Time</b>:\s*)(?:\d+:\d+\s*[AP]M|TBD)',
+                            lambda m: f"{m.group(1)}{game_info['time']}", content)
 
-    # Update TV broadcasts
-    if game_info['tv_broadcasts']:
-        tv_str = ', '.join(game_info['tv_broadcasts'])
-        # Pattern: <b>TV</b>: ... <br> or similar
-        tv_pattern = r'(<b>TV</b><span>:</span>&nbsp;)[^<]+'
-        tv_replacement = rf'\g<1>{tv_str}'
-        content = re.sub(tv_pattern, tv_replacement, content, count=1, flags=re.IGNORECASE)
+    if game_info.get('tv_broadcasts'):
+        tv_str = esc(', '.join(game_info['tv_broadcasts']))
+        content = _sub_once(r'(<b>TV</b><span>:</span>&nbsp;)[^<]+', lambda m: f"{m.group(1)}{tv_str}", content)
 
-    # Update Radio stations (static for Rangers)
-    radio_pattern = r'(<b>&nbsp;Radio</b>:\s*)[^<]+'
-    radio_replacement = rf'\g<1>{NYR_RADIO_STATIONS}'
-    content = re.sub(radio_pattern, radio_replacement, content, count=1, flags=re.IGNORECASE)
+    content = _sub_once(r'(<b>&nbsp;Radio</b>:\s*)[^<]+', lambda m: f"{m.group(1)}{NYR_RADIO_STATIONS}", content)
 
-    # Update GameCenter link
-    if game_info['gamecenter_url']:
-        gc_pattern = r'(href=")[^"]*nhl\.com/gamecenter[^"]*(")'
-        gc_replacement = rf'\g<1>{game_info["gamecenter_url"]}\g<2>'
-        content = re.sub(gc_pattern, gc_replacement, content, count=1)
-
+    if game_info.get('gamecenter_url'):
+        content = _sub_once(r'(href=")[^"]*nhl\.com/gamecenter[^"]*(")',
+                            lambda m: f"{m.group(1)}{game_info['gamecenter_url']}{m.group(2)}", content)
     return content
 
 
-def update_team_section(content, team_abbrev, is_first_team=True):
-    """Update a team's section in the template."""
-    print(f"Fetching data for {team_abbrev}...")
+def find_team_section(content, is_first_team):
+    """(start, end) of a team's section, based on the <hr> separators.
 
-    standings, stats = get_team_stats(team_abbrev)
-    if not standings:
-        print(f"Error: Could not fetch standings data for {team_abbrev}")
-        return content
-
-    leaders = get_team_leaders(team_abbrev)
-
-    # Fetch line combinations FIRST to get starting goalie name
-    print(f"Fetching line combinations for {team_abbrev} from DailyFaceoff...")
-    lines = get_line_combinations(team_abbrev)
-
-    # Get starting goalie name from DailyFaceoff, then fetch their stats
-    starting_goalie_name = None
-    if lines and lines.get('goalies') and len(lines['goalies']) > 0:
-        starting_goalie_name = lines['goalies'][0]
-        print(f"  Starting goaltender: {starting_goalie_name}")
-
-    goalie = get_goalie_stats(team_abbrev, starting_goalie_name)
-    if goalie:
-        print(f"  Goalie stats: GS={goalie['games_started']}, REC={goalie['record']}")
-
-    # Extract standings data
-    wins = standings.get('wins', 0)
-    losses = standings.get('losses', 0)
-    otl = standings.get('otLosses', 0)
-    points = standings.get('points', 0)
-    record = f"{wins}-{losses}-{otl}"
-
-    div_rank = standings.get('divisionSequence', 0)
-    div_name = standings.get('divisionName', 'Division')
-    row = standings.get('regulationPlusOtWins', 0)
-    pts_pct = standings.get('pointPctg', 0)
-
-    home_wins = standings.get('homeWins', 0)
-    home_losses = standings.get('homeLosses', 0)
-    home_otl = standings.get('homeOtLosses', 0)
-    home_record = f"{home_wins}-{home_losses}-{home_otl}"
-
-    road_wins = standings.get('roadWins', 0)
-    road_losses = standings.get('roadLosses', 0)
-    road_otl = standings.get('roadOtLosses', 0)
-    road_record = f"{road_wins}-{road_losses}-{road_otl}"
-
-    so_wins = standings.get('shootoutWins', 0)
-    so_losses = standings.get('shootoutLosses', 0)
-    so_record = f"{so_wins}-{so_losses}"
-
-    l10_wins = standings.get('l10Wins', 0)
-    l10_losses = standings.get('l10Losses', 0)
-    l10_otl = standings.get('l10OtLosses', 0)
-    l10_record = f"{l10_wins}-{l10_losses}-{l10_otl}"
-
-    streak_code = standings.get('streakCode', 'W')
-    streak_count = standings.get('streakCount', 0)
-    streak = format_streak(streak_code, streak_count)
-
-    # Split content into sections based on <hr> tags
-    # Template structure varies:
-    #   - 3 HRs: HR1=header end, HR2=first team end, HR3=second team end
-    #     First team: HR1 to HR2, Second team: HR2 to HR3
-    #   - 2 HRs: HR1=first team end, HR2=footer start
-    #     Both teams share HR1 to HR2 section
-    hr_pattern = r'<hr\s+style="width:\d+%">'
-    hr_matches = list(re.finditer(hr_pattern, content))
-
+    3+ HRs: HR1-HR2 is the first team, HR2-HR3 the second team.
+    2 HRs:  both teams share HR1-HR2.
+    """
+    hr_matches = list(re.finditer(r'<hr\s+style="width:\d+%">', content))
     if len(hr_matches) >= 3:
-        # 3+ HRs: Each team has its own dedicated section
         if is_first_team:
-            section_start = hr_matches[0].start()
-            section_end = hr_matches[1].start()
-        else:
-            section_start = hr_matches[1].start()
-            section_end = hr_matches[2].start()
-    elif len(hr_matches) >= 2:
-        # 2 HRs: Both teams share the section between HR1 and HR2
-        section_start = hr_matches[0].start()
-        section_end = hr_matches[1].start()
-    else:
-        # Fallback: process entire content
-        section_start = 0
-        section_end = len(content)
+            return hr_matches[0].start(), hr_matches[1].start()
+        return hr_matches[1].start(), hr_matches[2].start()
+    if len(hr_matches) == 2:
+        return hr_matches[0].start(), hr_matches[1].start()
+    log.warning("Template has fewer than 2 <hr> separators; updating the whole document")
+    return 0, len(content)
 
+
+def _is_blank_paragraph(inner):
+    return not re.sub(r'(&nbsp;|<br\s*/?>|\s)', '', inner, flags=re.IGNORECASE)
+
+
+def render_lineup(section, lineup, is_first_team=True):
+    """Fill the forwards and defense paragraphs under the "Starting Lineup" header.
+
+    Uses the first two non-blank <p> blocks between the header and "Starting
+    Goaltender", so it works for both team sections and tolerates spacing,
+    spacer paragraphs and minor template edits. (is_first_team kept for
+    backwards compatibility; both sections are handled the same way.)
+    """
+    forward_lines = [" / ".join(esc(n) for n in line) for line in lineup.get('forwards', []) if line]
+    defense_pairs = [" / ".join(esc(n) for n in pair) for pair in lineup.get('defense', []) if pair]
+
+    header = re.search(r'<b>\s*Starting Lineup:?\s*\^?\s*</b>\s*</h3>', section, re.IGNORECASE)
+    if not header:
+        log.warning("  'Starting Lineup' header not found in template section; lines not written")
+        return section
+    stop = re.search(r'Starting Goaltender|<hr\b', section[header.end():], re.IGNORECASE)
+    region_end = header.end() + stop.start() if stop else len(section)
+    region = section[header.end():region_end]
+
+    paragraphs = [m for m in re.finditer(r'<p>(.*?)</p>', region, re.IGNORECASE | re.DOTALL)
+                  if not _is_blank_paragraph(m.group(1))]
+    edits = []
+    if forward_lines and paragraphs:
+        edits.append((paragraphs[0], "\n\t\t" + "<br>\n\t\t".join(forward_lines) + "\n\t"))
+    if defense_pairs and len(paragraphs) > 1:
+        # Keep a leading <br> spacer if the template uses one (opponent section does)
+        lead = "\n\t\t<br>" if re.match(r'\s*<br\s*/?>', paragraphs[1].group(1), re.IGNORECASE) else ""
+        edits.append((paragraphs[1], lead + "\n\t\t" + "<br>\n\t\t".join(defense_pairs) + "\n\t"))
+    elif defense_pairs:
+        log.warning("  Template has no defense paragraph under 'Starting Lineup'; pairs not written")
+
+    for match, inner in reversed(edits):
+        region = region[:match.start(1)] + inner + region[match.end(1):]
+    log.info("  Line combinations updated (%d forward lines, %d defense pairs)",
+             len(forward_lines) if edits else 0, len(defense_pairs) if len(edits) > 1 else 0)
+    return section[:header.end()] + region + section[region_end:]
+
+
+def update_team_section(content, team, is_first_team=True):
+    """Write one team's gathered data into its section of the template."""
+    section_start, section_end = find_team_section(content, is_first_team)
     section = content[section_start:section_end]
-    print(f"  Section: {section_start} to {section_end}, length={len(section)}")
 
-    # Helper to replace content in a section
-    def replace_in_section(section_content, pattern, replacement):
-        return re.sub(pattern, replacement, section_content, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-    # Update standings, team stats, and team leaders
-    # Each team has its own dedicated section (Rangers: HR1-HR2, Opponent: HR2-HR3)
-    # so both teams can safely update their respective markers
-    if True:  # Process for both teams
-        # Update standings - RECORD (look for NYR RECORD specifically to avoid matching HOME/AWAY)
-        # Pattern matches data-gdt values containing "NYR" and "RECORD" (e.g., "***UPDATE NYR RECORD***")
-        record_pattern = r'(<p\s+data-gdt="[^"]*NYR[^"]*RECORD[^"]*">).*?(</p>)'
-        record_replacement = rf'\1\n\t\t\t\t{record} (<b>{points} Points</b>)\n\t\t\t\2'
-        section = replace_in_section(section, record_pattern, record_replacement)
-
-        # Update POSITION
-        pos_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*POSITION[^"]*">)\s*[^<]*(</p>)'
-        pos_replacement = rf'\1\n\t\t\t\t{ordinal(div_rank)} &mdash; {div_name}\n\t\t\t\2'
-        section = replace_in_section(section, pos_pattern, pos_replacement)
-
-        # Update ROW
-        row_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*ROW[^"]*">)\s*[^<]*(</p>)'
-        row_replacement = rf'\1\n\t\t\t\t{row}\n\t\t\t\2'
-        section = replace_in_section(section, row_pattern, row_replacement)
-
-        # Update P%
-        pct_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*P%[^"]*">)\s*[^<]*(</p>)'
-        pct_str = f".{int(pts_pct * 1000):03d}"[:4]
-        pct_replacement = rf'\1\n\t\t\t\t{pct_str}\n\t\t\t\2'
-        section = replace_in_section(section, pct_pattern, pct_replacement)
-
-        # Update HOME record
-        home_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*RECORD\s*HOME[^"]*">)\s*[^<]*(</p>)'
-        home_replacement = rf'\1\n\t\t\t\t{home_record}\n\t\t\t\2'
-        section = replace_in_section(section, home_pattern, home_replacement)
-
-        # Update AWAY record
-        away_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*RECORD\s*AWAY[^"]*">)\s*[^<]*(</p>)'
-        away_replacement = rf'\1\n\t\t\t\t{road_record}\n\t\t\t\2'
-        section = replace_in_section(section, away_pattern, away_replacement)
-
-        # Update S/O record
-        so_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*S/O[^"]*">)\s*[^<]*(</p>)'
-        so_replacement = rf'\1\n\t\t\t\t{so_record}\n\t\t\t\2'
-        section = replace_in_section(section, so_pattern, so_replacement)
-
-        # Update LAST 10
-        l10_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*LAST\s*10[^"]*">)\s*[^<]*(</p>)'
-        l10_replacement = rf'\1\n\t\t\t\t{l10_record}\n\t\t\t\2'
-        section = replace_in_section(section, l10_pattern, l10_replacement)
-
-        # Update STREAK
-        streak_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*STREAK[^"]*">)\s*[^<]*(</p>)'
-        streak_replacement = rf'\1\n\t\t\t\t{streak}\n\t\t\t\2'
-        section = replace_in_section(section, streak_pattern, streak_replacement)
-
-        # Update Team Statistics
-        if stats:
-            diff_str = f"+{stats['diff']}" if stats['diff'] > 0 else str(stats['diff'])
-
-            # Pattern matches data-gdt values containing "NYR" and "DIFF" (e.g., "***UPDATE NYR DIFF***")
-            diff_pattern = r'(<p\s+data-gdt="[^"]*NYR[^"]*DIFF[^"]*">).*?(</p>)'
-            diff_replacement = rf'\1\n\t\t\t\t{diff_str} ({ordinal(stats["diff_rank"])})\n\t\t\t\2'
-            section = replace_in_section(section, diff_pattern, diff_replacement)
-
-            gfgp_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GF/GP[^"]*">)\s*[^<]*(</p>)'
-            gfgp_replacement = rf'\1\n\t\t\t\t{stats["gf_per_game"]:.2f} ({ordinal(stats["gf_rank"])})\n\t\t\t\2'
-            section = replace_in_section(section, gfgp_pattern, gfgp_replacement)
-
-            gagp_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GA/GP[^"]*">)\s*[^<]*(</p>)'
-            gagp_replacement = rf'\1\n\t\t\t\t{stats["ga_per_game"]:.2f} ({ordinal(stats["ga_rank"])})\n\t\t\t\2'
-            section = replace_in_section(section, gagp_pattern, gagp_replacement)
-
-            pp_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*PP%[^"]*">)\s*[^<]*(</p>)'
-            pp_replacement = rf'\1\n\t\t\t\t{stats["pp_pct"]}% ({ordinal(stats["pp_rank"])})\n\t\t\t\2'
-            section = replace_in_section(section, pp_pattern, pp_replacement)
-
-            pk_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*PK%[^"]*">)\s*[^<]*(</p>)'
-            pk_replacement = rf'\1\n\t\t\t\t{stats["pk_pct"]}% ({ordinal(stats["pk_rank"])})\n\t\t\t\2'
-            section = replace_in_section(section, pk_pattern, pk_replacement)
-
-        # Update Team Leaders
-        # Pattern matches data-gdt values containing "NYR" and "GOALS" (e.g., "***UPDATE NYR GOALS***")
-        goals_pattern = r'(<p\s+data-gdt="[^"]*NYR[^"]*GOALS[^"]*">).*?(</p>)'
-        goals_replacement = rf'\1\n\t\t\t\t{leaders["goals"]["name"]} ({leaders["goals"]["value"]})\n\t\t\t\2'
-        section = replace_in_section(section, goals_pattern, goals_replacement)
-
-        assists_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*ASSISTS[^"]*">)\s*[^<]*(</p>)'
-        assists_replacement = rf'\1\n\t\t\t\t{leaders["assists"]["name"]} ({leaders["assists"]["value"]})\n\t\t\t\2'
-        section = replace_in_section(section, assists_pattern, assists_replacement)
-
-        points_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*POINTS[^"]*">)\s*[^<]*(</p>)'
-        points_replacement = rf'\1\n\t\t\t\t{leaders["points"]["name"]} ({leaders["points"]["value"]})\n\t\t\t\2'
-        section = replace_in_section(section, points_pattern, points_replacement)
-
-        plusminus_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*\+/-[^"]*">)\s*[^<]*(</p>)'
-        plusminus_replacement = rf'\1\n\t\t\t\t{leaders["plusMinus"]["name"]} ({leaders["plusMinus"]["value"]})\n\t\t\t\2'
-        section = replace_in_section(section, plusminus_pattern, plusminus_replacement)
-
-        pim_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*PIM[^"]*">)\s*[^<]*(</p>)'
-        pim_replacement = rf'\1\n\t\t\t\t{leaders["pim"]["name"]} ({leaders["pim"]["value"]})\n\t\t\t\2'
-        section = replace_in_section(section, pim_pattern, pim_replacement)
-
-        toid_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*TOI/G\s*\(D\)[^"]*">)\s*[^<]*(</p>)'
-        toid_replacement = rf'\1\n\t\t\t\t{leaders["toi_d"]["name"]} ({leaders["toi_d"]["value"]})\n\t\t\t\2'
-        section = replace_in_section(section, toid_pattern, toid_replacement)
-
-        toif_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*TOI/G\s*\(F\)[^"]*">)\s*[^<]*(</p>)'
-        toif_replacement = rf'\1\n\t\t\t\t{leaders["toi_f"]["name"]} ({leaders["toi_f"]["value"]})\n\t\t\t\2'
-        section = replace_in_section(section, toif_pattern, toif_replacement)
-
-    # Update line combinations (already fetched earlier)
-    # The template has different structures for Rangers vs opponent:
-    #   - Rangers (before HR1): Only has defense pairs (no "Starting Lineup" header), then Starting Goaltender
-    #   - Opponent (after HR1): Has full "Starting Lineup" section with forwards and defense
-    if lines:
-        # Build forward lines
-        forward_lines = []
-        for line in lines['forwards']:
-            if len(line) >= 3:
-                forward_lines.append(f"{line[0]} / {line[1]} / {line[2]}")
-            elif len(line) > 0:
-                forward_lines.append(" / ".join(line))
-
-        # Build defense pairs
-        defense_pairs = []
-        for pair in lines['defense']:
-            if len(pair) >= 2:
-                defense_pairs.append(f"{pair[0]} / {pair[1]}")
-            elif len(pair) > 0:
-                defense_pairs.append(pair[0])
-
-        # For 3-HR template: Each team has a dedicated section starting at an HR
-        # Update both forwards and defense in a single pass to avoid pattern matching issues
-        forwards_html = "<br>\n\t\t".join(forward_lines) if forward_lines else ""
-        defense_html = "<br>\n\t\t".join(defense_pairs) if defense_pairs else ""
-
-        if is_first_team:
-            # Rangers: forwards then &nbsp; spacer then defense
-            if forward_lines and defense_pairs:
-                lineup_pattern = r'(<b>Starting Lineup:\^?</b>\s*</h3>\s*<p>).*?(</p>\s*<p>\s*&nbsp;\s*</p>\s*<p>).*?(</p>\s*<h3>\s*<b>Starting Goaltender)'
-                lineup_replacement = rf'\1\n\t\t{forwards_html}\n\t\2\n\t\t{defense_html}\n\t\3'
-                section = re.sub(lineup_pattern, lineup_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-            elif forward_lines:
-                lineup_pattern = r'(<b>Starting Lineup:\^?</b>\s*</h3>\s*<p>).*?(</p>\s*<p>)'
-                lineup_replacement = rf'\1\n\t\t{forwards_html}\n\t\2'
-                section = re.sub(lineup_pattern, lineup_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-        else:
-            # Opponent: forwards then defense with <br> prefix
-            if forward_lines and defense_pairs:
-                lineup_pattern = r'(<b>Starting Lineup:\^?</b>\s*</h3>\s*<p>).*?(</p>\s*<p>\s*(?:<br>\s*)?).*?(</p>\s*(?:<h4>|<h3>\s*<b>Starting Goaltender))'
-                lineup_replacement = rf'\1\n\t\t{forwards_html}\n\t\2\n\t\t{defense_html}\n\t\3'
-                section = re.sub(lineup_pattern, lineup_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-            elif forward_lines:
-                lineup_pattern = r'(<b>Starting Lineup:\^?</b>\s*</h3>\s*<p>).*?(</p>\s*<p>)'
-                lineup_replacement = rf'\1\n\t\t{forwards_html}\n\t\2'
-                section = re.sub(lineup_pattern, lineup_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-        # Update starting goaltender name - process entire section since each team has dedicated section
-        if starting_goalie_name:
-            goalie_name_pattern = r'(<b>Starting Goaltender:</b>\s*</h3>\s*<p>)\s*[^<\n]+(<br>|&nbsp;)'
-            goalie_name_replacement = rf'\1\n\t\t{starting_goalie_name}\2'
-            section = re.sub(goalie_name_pattern, goalie_name_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-        print(f"  Line combinations updated ({len(forward_lines)} forward lines, {len(defense_pairs)} defense pairs)")
-
-    # Update goaltender stats (AFTER line combinations to avoid being overwritten)
-    # Each team has a dedicated section, so process the entire section
-    if goalie:
-        gs_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GS[^"]*">)\s*[^<]*(</p>)'
-        gs_replacement = rf'\1\n\t\t\t\t{goalie["games_started"]}\n\t\t\t\2'
-        section = re.sub(gs_pattern, gs_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-        rec_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s+REC\*\*\*">)\s*[^<]*(</p>)'
-        rec_replacement = rf'\1\n\t\t\t\t{goalie["record"]}\n\t\t\t\2'
-        section = re.sub(rec_pattern, rec_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-        sv_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*SV%[^"]*">)\s*[^<]*(</p>)'
-        sv_replacement = rf'\1\n\t\t\t\t{goalie["sv_pct"]}\n\t\t\t\2'
-        section = re.sub(sv_pattern, sv_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-        gaa_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*GAA[^"]*">)\s*[^<]*(</p>)'
-        gaa_replacement = rf'\1\n\t\t\t\t{goalie["gaa"]}\n\t\t\t\2'
-        section = re.sub(gaa_pattern, gaa_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-        so_stat_pattern = r'(<p\s+data-gdt="[^"]*UPDATE\s*SO[^"]*">)\s*[^<]*(</p>)'
-        so_stat_replacement = rf'\1\n\t\t\t\t{goalie["shutouts"]}\n\t\t\t\2'
-        section = re.sub(so_stat_pattern, so_stat_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-    # Update injuries section
-    if lines and lines.get('injuries'):
-        injuries_list = lines['injuries']
-        if injuries_list:
-            # Build injuries HTML
-            injury_lines = []
-            for inj in injuries_list:
-                name = inj.get('name', 'Unknown')
-                status = inj.get('status', 'IR')
-                detail = inj.get('detail', 'Undisclosed')
-                injury_lines.append(f'{name} <span class="gdtAlert">[{status}]</span> &mdash; {detail}')
-
-            injuries_html = "<br>\n\t\t".join(injury_lines)
-
-            # Pattern to match the first <p> after "Injuries, Suspensions, & Scratches" header
-            # and replace its content (may span multiple <p> tags until the next section)
-            injuries_pattern = r'(<b>Injuries,\s*Suspensions,\s*(?:&amp;|&)\s*Scratches:</b>\s*</h3>\s*<p>).*?(</p>\s*<p>\s*&nbsp;\s*</p>)'
-            injuries_replacement = rf'\1\n\t\t{injuries_html}\n\t\2'
-            section = re.sub(injuries_pattern, injuries_replacement, section, count=1, flags=re.IGNORECASE | re.DOTALL)
-
-            print(f"  Injuries updated ({len(injuries_list)} entries)")
-
-    # Reconstruct content
-    content = content[:section_start] + section + content[section_end:]
-
-    return content
-
-
-def update_template(template_content, opponent_abbrev):
-    """Update the template with data for both teams."""
-    print("=" * 50)
-    print("  Updating Game Day Thread")
-    print("=" * 50)
-    print()
-
-    nyr_abbrev = "NYR"
-
-    # Update team logos throughout the template
-    template_content = update_team_logos(template_content, nyr_abbrev, opponent_abbrev)
-
-    # Find the next game between Rangers and opponent
-    game_data = find_next_game(nyr_abbrev, opponent_abbrev)
-
-    if game_data:
-        game_info = get_game_info(game_data)
-        if game_info:
-            print(f"Found game: {game_info['away_team']} @ {game_info['home_team']}")
-            print(f"  Date: {game_info['date']}")
-            print(f"  Time: {game_info['time']}")
-            print(f"  TV: {', '.join(game_info['tv_broadcasts']) if game_info['tv_broadcasts'] else 'TBD'}")
-            print(f"  Radio: {NYR_RADIO_STATIONS}")
-            print()
-
-            # Get Rangers game number
-            nyr_game_number = get_team_game_number(nyr_abbrev, game_info.get('date_obj'))
-
-            # Update game header
-            template_content = update_game_header(template_content, game_info, nyr_game_number)
+    s = team.get('standing')
+    team_tag = r'(?:[A-Z]{2,3}\s+)?'  # e.g. "NYR " in ***UPDATE NYR RECORD***
+    fields = []
+    if not s:
+        log.error("No standings data for %s; standings fields left unchanged", team['abbrev'])
     else:
-        print(f"Warning: Could not find upcoming game between {nyr_abbrev} and {opponent_abbrev}")
-        print()
+        fields += [
+            (team_tag + r'RECORD', f"{s.get('wins', 0)}-{s.get('losses', 0)}-{s.get('otLosses', 0)} "
+                                   f"(<b>{s.get('points', 0)} Points</b>)"),
+            (r'POSITION', f"{ordinal(s.get('divisionSequence', 0))} &mdash; "
+                          f"{esc(s.get('divisionName', 'Division'))}"),
+            (r'ROW', s.get('regulationPlusOtWins', 0)),
+            (r'P%', format_three_decimals(s.get('pointPctg', 0))),
+            (r'RECORD\s+HOME', f"{s.get('homeWins', 0)}-{s.get('homeLosses', 0)}-{s.get('homeOtLosses', 0)}"),
+            (r'RECORD\s+AWAY', f"{s.get('roadWins', 0)}-{s.get('roadLosses', 0)}-{s.get('roadOtLosses', 0)}"),
+            (r'S/O', f"{s.get('shootoutWins', 0)}-{s.get('shootoutLosses', 0)}"),
+            (r'LAST\s+10', f"{s.get('l10Wins', 0)}-{s.get('l10Losses', 0)}-{s.get('l10OtLosses', 0)}"),
+            (r'STREAK', format_streak(s.get('streakCode', '-'), s.get('streakCount', 0))),
+        ]
 
-    # Update Rangers section (first team)
-    print("-" * 40)
-    print(f"Updating {nyr_abbrev} (Rangers)...")
-    print("-" * 40)
-    template_content = update_team_section(template_content, nyr_abbrev, is_first_team=True)
-    print()
+    stats = team.get('stats')
+    if stats:
+        def rank(r):
+            return f" ({ordinal(r)})" if r else ""
+        diff_str = f"+{stats['diff']}" if stats['diff'] > 0 else str(stats['diff'])
+        fields += [
+            (team_tag + r'DIFF', f"{diff_str}{rank(stats['diff_rank'])}"),
+            (r'GF/GP', f"{stats['gf_per_game']:.2f}{rank(stats['gf_rank'])}"),
+            (r'GA/GP', f"{stats['ga_per_game']:.2f}{rank(stats['ga_rank'])}"),
+            (r'PP%', f"{stats['pp_pct']}%{rank(stats['pp_rank'])}"),
+            (r'PK%', f"{stats['pk_pct']}%{rank(stats['pk_rank'])}"),
+        ]
 
-    # Update opponent section (second team)
-    print("-" * 40)
-    print(f"Updating {opponent_abbrev} ({TEAM_FULL_NAMES.get(opponent_abbrev, opponent_abbrev)})...")
-    print("-" * 40)
-    template_content = update_team_section(template_content, opponent_abbrev, is_first_team=False)
-    print()
+    leaders = team.get('leaders') or {}
+    for tag, key in [(team_tag + r'GOALS', 'goals'), (r'ASSISTS', 'assists'), (r'POINTS', 'points'),
+                     (r'\+/-', 'plusMinus'), (r'PIM', 'pim'), (r'TOI/G\s*\(D\)', 'toi_d'),
+                     (r'TOI/G\s*\(F\)', 'toi_f')]:
+        if key in leaders:
+            fields.append((tag, f"{esc(leaders[key]['name'])} ({leaders[key]['value']})"))
 
+    goalie = team.get('goalie')
+    if goalie:
+        fields += [
+            (r'GS', goalie['games_started']),
+            (r'REC', goalie['record']),
+            (r'SV%', goalie['sv_pct']),
+            (r'GAA', goalie['gaa']),
+            (r'SO', goalie['shutouts']),
+        ]
+
+    for tag, value in fields:
+        section = set_gdt_field(section, tag, value)
+
+    lineup = team.get('lineup')
+    if lineup:
+        section = render_lineup(section, lineup, is_first_team)
+
+    if goalie:
+        section = _sub_once(r'(<b>\s*Starting Goaltender:?\s*</b>\s*</h3>\s*<p>).*?(<br\s*/?>|&nbsp;|</p>)',
+                            lambda m: f"{m.group(1)}\n\t\t{esc(goalie['name'])}{m.group(2)}", section)
+
+    injuries = team.get('injuries')
+    if injuries is not None:
+        if injuries:
+            injuries_html = "<br>\n\t\t".join(
+                f"{esc(i['name'])} <span class=\"gdtAlert\">[{esc(i['status'])}]</span> &mdash; {esc(i['detail'])}"
+                for i in injuries)
+        else:
+            injuries_html = "None"
+        section = _sub_once(r'(<b>\s*Injuries,\s*Suspensions,\s*(?:&amp;|&)\s*Scratches:?\s*</b>\s*</h3>\s*<p>)'
+                            r'.*?(</p>)',
+                            lambda m: f"{m.group(1)}\n\t\t{injuries_html}\n\t{m.group(2)}", section)
+
+    return content[:section_start] + section + content[section_end:]
+
+
+def update_template(template_content, opponent_abbrev, notes=None, http=None):
+    """Update the template with data for both teams.
+
+    notes: optional list that receives human-readable warnings (unconfirmed goalie,
+           fallback lines, unreachable sources) for display in the web UI.
+    """
+    http = http or HttpClient()
+    log.info("=" * 50)
+    log.info("  Updating Game Day Thread: %s vs %s", NYR, opponent_abbrev)
+    log.info("=" * 50)
+
+    template_content = update_team_logos(template_content, NYR, opponent_abbrev)
+
+    nyr_schedule = get_season_schedule(http, NYR)
+    game_data = find_next_game(nyr_schedule, opponent_abbrev)
+    game_info = get_game_info(game_data, NYR) if game_data else None
+    if game_info:
+        log.info("Found game: %s @ %s on %s at %s (TV: %s)", game_info['away_team'], game_info['home_team'],
+                 game_info['date'], game_info['time'], ', '.join(game_info['tv_broadcasts']) or 'TBD')
+        template_content = update_game_header(template_content, game_info, get_game_number(nyr_schedule, game_data))
+    else:
+        add_note(notes, f"No upcoming {NYR} vs {opponent_abbrev} game found; game header left unchanged")
+
+    standings = get_standings(http)
+    if not standings:
+        add_note(notes, "Could not load NHL standings; team stats were not updated")
+
+    for abbrev, first in ((NYR, True), (opponent_abbrev, False)):
+        log.info("-" * 40)
+        team = gather_team_data(http, abbrev, standings, game_info, notes)
+        template_content = update_team_section(template_content, team, is_first_team=first)
+
+    if http.blocked_hosts:
+        add_note(notes, "Blocked by bot protection: " + ", ".join(sorted(http.blocked_hosts))
+                 + " (fallback sources were used)")
     return template_content
 
+
+# ---------------------------------------------------------------------------
+# Command line
+# ---------------------------------------------------------------------------
 
 def interactive_mode():
     """Run in interactive mode - prompts user for input."""
@@ -1424,69 +1363,65 @@ def interactive_mode():
     print("  Rangers vs. Opponent")
     print("=" * 50)
     print()
-
     print("The Rangers are automatically set as the first team.")
-    print("Enter the opponent team name.")
-    print()
-    print("Supported: Sabres, Oilers, Leafs, Bruins, etc.")
-    print("You can use full names, nicknames, or abbreviations")
+    print("Enter the opponent team name (e.g. Sabres, BUF, Buffalo Sabres).")
     print()
 
     while True:
         team_input = input("Enter opponent team: ").strip()
+        opponent_abbrev = get_team_abbrev(team_input)
         if not team_input:
             print("Please enter a team name.")
-            continue
-
-        opponent_abbrev = get_team_abbrev(team_input)
-        if opponent_abbrev:
-            if opponent_abbrev == "NYR":
-                print("The Rangers can't play themselves! Enter a different opponent.")
-                continue
+        elif not opponent_abbrev:
+            print(f"Could not recognize '{team_input}'. Examples: Sabres, BUF, Buffalo Sabres")
+        elif opponent_abbrev == NYR:
+            print("The Rangers can't play themselves! Enter a different opponent.")
+        else:
             print(f"Opponent identified: {opponent_abbrev} ({TEAM_FULL_NAMES.get(opponent_abbrev, '')})")
             break
-        else:
-            print(f"Could not recognize '{team_input}'. Please try again.")
-            print("Examples: Sabres, BUF, Buffalo Sabres, etc.")
 
     print()
-
     print("Enter the path to your template file.")
     print("(You can drag and drop the file into this window)")
     print()
 
     while True:
-        file_path = input("Template file path: ").strip()
-        file_path = file_path.strip('"').strip("'")
-
+        file_path = input("Template file path: ").strip().strip('"').strip("'")
         if not file_path:
             print("Please enter a file path.")
-            continue
-
-        import os
-        if os.path.exists(file_path):
+        elif os.path.exists(file_path):
             break
         else:
             print(f"File not found: {file_path}")
-            print("Please check the path and try again.")
 
     print()
-
     return opponent_abbrev, file_path
 
 
 def main():
-    if len(sys.argv) > 1:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    launched_interactively = len(sys.argv) <= 1  # e.g. double-clicked the .exe
+
+    def fail(message):
+        log.error("Error: %s", message)
+        if launched_interactively:
+            input("\nPress Enter to exit...")
+        sys.exit(1)
+
+    if launched_interactively:
+        opponent_abbrev, file_path = interactive_mode()
+        output_path = file_path
+    else:
         parser = argparse.ArgumentParser(
-            description='Update NHL Game Day Thread template with data for Rangers vs Opponent'
-        )
-        parser.add_argument('opponent', nargs='?',
-                          help='Opponent team name (e.g., "Sabres", "BUF")')
+            description='Update NHL Game Day Thread template with data for Rangers vs Opponent')
+        parser.add_argument('opponent', nargs='?', help='Opponent team name (e.g., "Sabres", "BUF")')
         parser.add_argument('--file', '-f', help='Path to the template file')
         parser.add_argument('--output', '-o', help='Output file path (defaults to overwriting input)')
         parser.add_argument('--interactive', '-i', action='store_true', help='Run in interactive mode')
-
+        parser.add_argument('--verbose', '-v', action='store_true', help='Show debug output')
         args = parser.parse_args()
+        if args.verbose:
+            logging.getLogger().setLevel(logging.DEBUG)
 
         if args.interactive or not args.opponent:
             opponent_abbrev, file_path = interactive_mode()
@@ -1494,57 +1429,39 @@ def main():
         else:
             opponent_abbrev = get_team_abbrev(args.opponent)
             if not opponent_abbrev:
-                print(f"Error: Could not recognize team '{args.opponent}'")
-                print("Try using the full team name or abbreviation (e.g., 'Sabres', 'BUF')")
-                sys.exit(1)
-
-            if opponent_abbrev == "NYR":
-                print("Error: Rangers can't play themselves! Enter a different opponent.")
-                sys.exit(1)
-
-            print(f"Opponent identified: {opponent_abbrev} ({TEAM_FULL_NAMES.get(opponent_abbrev, '')})")
-
+                fail(f"Could not recognize team '{args.opponent}'. Try e.g. 'Sabres' or 'BUF'.")
+            if opponent_abbrev == NYR:
+                fail("Rangers can't play themselves! Enter a different opponent.")
             if not args.file:
-                print("Error: Please specify a template file with --file")
-                sys.exit(1)
-
+                fail("Please specify a template file with --file")
+            log.info("Opponent identified: %s (%s)", opponent_abbrev, TEAM_FULL_NAMES.get(opponent_abbrev, ''))
             file_path = args.file
             output_path = args.output or args.file
-    else:
-        opponent_abbrev, file_path = interactive_mode()
-        output_path = file_path
 
-    # Read template
     try:
         with open(file_path, 'r', encoding='utf-8-sig') as f:
             template = f.read()
-    except FileNotFoundError:
-        print(f"Error: Template file not found: {file_path}")
-        input("\nPress Enter to exit...")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error reading template: {e}")
-        input("\nPress Enter to exit...")
-        sys.exit(1)
+    except OSError as e:
+        fail(f"Could not read template {file_path}: {e}")
 
-    # Update template
-    updated = update_template(template, opponent_abbrev)
-    if not updated:
-        print("Error: Failed to update template")
-        input("\nPress Enter to exit...")
-        sys.exit(1)
+    notes = []
+    updated = update_template(template, opponent_abbrev, notes)
 
-    # Write output
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(updated)
-        print(f"Successfully updated: {output_path}")
-    except Exception as e:
-        print(f"Error writing output: {e}")
-        input("\nPress Enter to exit...")
-        sys.exit(1)
+    except OSError as e:
+        fail(f"Could not write output {output_path}: {e}")
 
-    if len(sys.argv) <= 1:
+    log.info("")
+    log.info("Successfully updated: %s", output_path)
+    if notes:
+        log.info("")
+        log.info("Things to double-check:")
+        for note in notes:
+            log.info("  - %s", note)
+
+    if launched_interactively:
         print()
         input("Press Enter to exit...")
 

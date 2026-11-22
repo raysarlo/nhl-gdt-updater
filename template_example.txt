@@ -14,7 +14,7 @@
 
 	<h4>
 		<b>Time</b>: 7:00 PM<br>
-		<b>TV</b><span>:</span>&nbsp;MSG-B, MSGbr>
+		<b>TV</b><span>:</span>&nbsp;MSG<br>
 		<b>&nbsp;Radio</b>: 98.7 FM, 107.1 FM, 710 AM, Sirius XM
 	</h4>
 
