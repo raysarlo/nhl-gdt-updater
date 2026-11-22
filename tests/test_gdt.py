@@ -304,8 +304,13 @@ class LineTests(unittest.TestCase):
         # Centers are placed in the middle slot
         for line in lines["forwards"]:
             self.assertEqual(nyr["forwards"][line[1]], "C")
-        # Fourth line (least ice time) comes last
-        self.assertIn("M. Sasson", [nyr["names"][p] for p in lines["forwards"][-1]])
+        # Lines/pairs are ranked by time the whole unit was on the ice together
+        self.assertEqual(lines["forward_toi"], sorted(lines["forward_toi"], reverse=True))
+        self.assertEqual(lines["defense_toi"], sorted(lines["defense_toi"], reverse=True))
+        self.assertIn("M. Zibanejad", [nyr["names"][p] for p in lines["forwards"][0]])  # 13.7 min together
+        self.assertIn("N. Laba", [nyr["names"][p] for p in lines["forwards"][-1]])       # 7.8 min together
+        self.assertIn("S. Durzi", [nyr["names"][p] for p in lines["defense"][0]])        # 15.2 min together
+        self.assertEqual(round(lines["forward_toi"][0] / 60, 1), 13.7)
 
     def test_dailyfaceoff_lineup_parsing(self):
         lineup = gdt.parse_dailyfaceoff_lineup(gdt.extract_next_data(next_data_page(DFO_NYR_LINES)))
@@ -505,6 +510,43 @@ class EndToEndTests(unittest.TestCase):
         self.assertTrue(any("Blocked by bot protection: www.dailyfaceoff.com" in n for n in notes), notes)
         # Injured players never appear in rebuilt lines
         self.assertNotIn("Joe Veleno /", nyr)
+
+
+class MultiGameLineRankingTests(unittest.TestCase):
+    def test_unit_time_together(self):
+        shifts = [
+            {"teamAbbrev": "NYR", "playerId": 1, "period": 1, "startTime": "00:00", "endTime": "01:00", "typeCode": 517},
+            {"teamAbbrev": "NYR", "playerId": 2, "period": 1, "startTime": "00:30", "endTime": "01:30", "typeCode": 517},
+            {"teamAbbrev": "NYR", "playerId": 3, "period": 1, "startTime": "00:45", "endTime": "02:00", "typeCode": 517},
+            {"teamAbbrev": "NYR", "playerId": 1, "period": 2, "startTime": "00:45", "endTime": "01:00", "typeCode": 517},
+            {"teamAbbrev": "NYR", "playerId": 3, "period": 2, "startTime": "00:45", "endTime": "01:00", "typeCode": 517},
+            {"teamAbbrev": "CAR", "playerId": 2, "period": 2, "startTime": "00:45", "endTime": "01:00", "typeCode": 517},
+        ]
+        # 1+2 overlap 30s; 1+2+3 overlap 15s (P1 0:45-1:00); 1+3 add 15s in P2; other team ignored
+        self.assertEqual(gdt.unit_time_together(shifts, "NYR", [[1, 2], [1, 2, 3], [1, 3]]), [30, 15, 30])
+
+    def test_rank_units_over_games(self):
+        groups = [["a"], ["b"], ["c"]]
+        ordered, totals = gdt.rank_units_over_games(groups, [600, 500, 400], [[100, 400, 0], [50, 0, 0]])
+        self.assertEqual(ordered, [["b"], ["a"], ["c"]])
+        self.assertEqual(totals, [900, 750, 400])
+        # Ties keep the last game's order
+        ordered, _ = gdt.rank_units_over_games(groups, [600, 500, 400], [[0, 100, 0]])
+        self.assertEqual(ordered, [["a"], ["b"], ["c"]])
+
+    def test_older_game_reorders_rebuilt_lines(self):
+        ids = {name: pid for pid, name in gdt.boxscore_roster(load_boxscore(), "NYR")["names"].items()}
+        laba_line = [ids["E. Tolvanen"], ids["N. Laba"], ids["J. Chmelar"]]
+        older = [{"teamAbbrev": "NYR", "playerId": pid, "period": 1, "startTime": "00:00", "endTime": "10:00",
+                  "typeCode": 517} for pid in laba_line]
+        http = FakeHttp(blocked={"www.dailyfaceoff.com"})
+        http.routes[f"{gdt.NHL_STATS_API}/shiftcharts?cayenneExp=gameId=2026020370"] = {"data": older}
+        notes = []
+        html = gdt.update_template(read_template(), "BUF", notes=notes, http=http)
+        nyr, _ = team_sections(html)
+        # Last game alone: Gawdin line (8.4 min) ahead of Laba line (7.8); +10 min in the older game flips them
+        self.assertLess(nyr.index("N. Laba"), nyr.index("M. Sasson"))
+        self.assertTrue(any("ranked by time together over the last 2 games" in n for n in notes), notes)
 
 
 class RotoWireTests(unittest.TestCase):
